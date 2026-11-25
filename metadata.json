@@ -1,0 +1,6 @@
+{
+  "name": "Sistem Informasi Keluarga Besar Bani Haji Mohammad Tohir",
+  "description": "Aplikasi terpadu silsilah keluarga, administrasi paguyuban, rumah tangga, dan keuangan transparan Bani Haji Mohammad Tohir (Guyub, Akur, Semedulur).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

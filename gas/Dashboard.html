@@ -1,0 +1,253 @@
+<div id="app-view" class="app-shell hidden">
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <div class="sidebar-brand-title">Bani H. M. Tohir</div>
+      <div class="sidebar-brand-sub">Guyub, Akur, Semedulur</div>
+    </div>
+    <nav class="sidebar-nav">
+      <button class="nav-item active" data-tab="dashboard" onclick="switchTab('dashboard')">Dashboard</button>
+      <button class="nav-item" data-tab="migrasi" onclick="switchTab('migrasi')">Migrasi &amp; Staging</button>
+      <button class="nav-item" data-tab="anggota" onclick="switchTab('anggota')">Data Anggota (Edit Tgl Lahir)</button>
+      <button class="nav-item" data-tab="users" onclick="switchTab('users')">Akun &amp; Hak Akses</button>
+      <button class="nav-item" data-tab="audit" onclick="switchTab('audit')">Audit Log &amp; Backup</button>
+      <button class="nav-item" data-tab="password" onclick="switchTab('password')">Ganti Password</button>
+    </nav>
+    <div style="padding:16px;border-top:1px solid rgba(255,255,255,0.12);font-size:12px;">
+      <div id="sidebar-user-name" style="font-weight:700;">-</div>
+      <div id="sidebar-user-role" style="color:#fde047;margin-top:2px;">-</div>
+    </div>
+  </aside>
+
+  <div class="main-area">
+    <header class="topbar">
+      <div>
+        <div id="breadcrumb-text" style="font-size:13px;color:#4b5563;font-weight:600;">Beranda / Dashboard</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span id="server-clock" class="tabular" style="font-size:12px;color:#4b5563;"></span>
+        <button class="btn btn-outline btn-sm" onclick="handleLogout()">Keluar</button>
+      </div>
+    </header>
+
+    <main class="content">
+      <div id="global-alert" class="alert hidden"></div>
+
+      <!-- TAB 1: DASHBOARD -->
+      <section id="tab-dashboard">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px;">
+          <div>
+            <h2 style="margin:0;font-size:20px;">Ringkasan Keluarga Besar</h2>
+            <div id="dash-source-note" style="font-size:13px;color:#4b5563;margin-top:2px;">Data dihitung langsung dari database Spreadsheet.</div>
+          </div>
+          <button class="btn btn-outline btn-sm" onclick="loadDashboard()">Muat Ulang Statistik</button>
+        </div>
+
+        <div class="stat-grid">
+          <div class="stat-card"><div class="stat-label">Total Anggota</div><div id="st-total" class="stat-value tabular">0</div></div>
+          <div class="stat-card"><div class="stat-label">Keturunan Kandung</div><div id="st-kandung" class="stat-value tabular">0</div></div>
+          <div class="stat-card"><div class="stat-label">Menantu</div><div id="st-menantu" class="stat-value tabular">0</div></div>
+          <div class="stat-card"><div class="stat-label">Hidup / Wafat</div><div id="st-hidup-wafat" class="stat-value tabular">0 / 0</div></div>
+          <div class="stat-card"><div class="stat-label">Kepala Keluarga (KK)</div><div id="st-kk" class="stat-value tabular">0</div></div>
+          <div class="stat-card"><div class="stat-label">Perlu Edit Tgl Lahir</div><div id="st-need-edit" class="stat-value tabular" style="color:#ca8a04;">0</div></div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;">
+          <div class="card">
+            <h3 style="margin:0 0 12px;font-size:15px;">Distribusi Per Generasi</h3>
+            <div id="chart-generasi"></div>
+          </div>
+          <div class="card">
+            <h3 style="margin:0 0 12px;font-size:15px;">Distribusi Per Cabang (Anak 1–9)</h3>
+            <div id="chart-cabang"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 2: MIGRASI & STAGING -->
+      <section id="tab-migrasi" class="hidden">
+        <div class="card">
+          <h3 style="margin:0 0 8px;font-size:16px;">Alur Migrasi Aman (Non-Destruktif)</h3>
+          <p style="margin:0 0 14px;font-size:13px;color:#4b5563;">Sheet lama tetap dipertahankan. Gunakan langkah berurutan di bawah untuk mengarsipkan, menyesuaikan opsi kode otomatis, memperbaiki tanggal lahir bila perlu, lalu melakukan commit.</p>
+          <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
+            <input id="src-sheet-name" class="input" style="width:180px;" value="Sheet1" placeholder="Nama Sheet Sumber" />
+            <button class="btn btn-outline" onclick="runInitDatabase()">1. Inisialisasi 32 Sheet</button>
+            <button class="btn btn-outline" onclick="runArchiveSource()">2. Arsipkan ke RAW_LEGACY_2026</button>
+            <select id="code-gen-mode" class="select" style="width:220px;">
+              <option value="AUTO_GENERATE">Opsi: Sesuaikan &amp; Generate Kode Otomatis</option>
+              <option value="KEEP_RAW">Opsi: Pertahankan Kode Asli</option>
+            </select>
+            <button class="btn btn-accent" onclick="runDryRun()">3. Jalankan Dry-Run Staging</button>
+            <button class="btn btn-primary" onclick="runCommitMigration()">4. Commit ke Database Produksi</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px;">
+            <div id="staging-summary-text" style="font-size:13px;color:#374151;font-weight:600;">Belum ada data staging dimuat.</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <select id="staging-filter" class="select" style="width:180px;" onchange="loadStaging(1)">
+                <option value="ALL">Semua Baris Staging</option>
+                <option value="KODE">Anomali / Penyesuaian Kode</option>
+                <option value="TGL_LAHIR">Perlu Edit Tgl Lahir</option>
+                <option value="MULTI_PASANGAN">Multi-Pasangan</option>
+                <option value="NAMA_KOSONG">Nama Kosong</option>
+              </select>
+              <input id="staging-search" class="input" style="width:200px;" placeholder="Cari nama / kode..." onkeyup="if(event.key==='Enter') loadStaging(1)" />
+              <button class="btn btn-outline btn-sm" onclick="loadStaging(1)">Filter</button>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID Calon</th>
+                  <th>Kode Lama → Baru</th>
+                  <th>Nama Lengkap</th>
+                  <th>Status &amp; Gen</th>
+                  <th>Tempat &amp; Tgl Lahir</th>
+                  <th>Catatan Anomali</th>
+                  <th>Aksi</th>
+                </tr>
+              </thead>
+              <tbody id="staging-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 3: DATA ANGGOTA (EDIT TANGGAL LAHIR) -->
+      <section id="tab-anggota" class="hidden">
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px;">
+            <h3 style="margin:0;font-size:16px;">Direktori Anggota &amp; Pembaruan Tanggal Lahir</h3>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <label style="font-size:12px;display:flex;align-items:center;gap:4px;">
+                <input type="checkbox" id="filter-need-edit-dob" onchange="loadMembers(1)" /> Hanya yang perlu edit tgl lahir
+              </label>
+              <input id="member-search" class="input" style="width:220px;" placeholder="Cari nama / kode..." onkeyup="if(event.key==='Enter') loadMembers(1)" />
+              <button class="btn btn-outline btn-sm" onclick="loadMembers(1)">Cari</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID Anggota</th>
+                  <th>Kode</th>
+                  <th>Nama</th>
+                  <th>Generasi</th>
+                  <th>Tempat &amp; Tanggal Lahir</th>
+                  <th>Hidup</th>
+                  <th>Aksi</th>
+                </tr>
+              </thead>
+              <tbody id="members-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 4: AKUN & HAK AKSES -->
+      <section id="tab-users" class="hidden">
+        <div class="card">
+          <h3 style="margin:0 0 12px;font-size:16px;">Tambah Akun Pengguna Baru</h3>
+          <form onsubmit="handleCreateUser(event)" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;align-items:end;">
+            <div><label style="font-size:12px;font-weight:600;">ID Login</label><input id="new-u-login" class="input" required minlength="4" /></div>
+            <div><label style="font-size:12px;font-weight:600;">Nama Tampilan</label><input id="new-u-name" class="input" required /></div>
+            <div>
+              <label style="font-size:12px;font-weight:600;">Role</label>
+              <select id="new-u-role" class="select">
+                <option value="ADMIN_KELUARGA">ADMIN KELUARGA</option>
+                <option value="PENGURUS">PENGURUS</option>
+                <option value="BENDAHARA">BENDAHARA</option>
+                <option value="SEKRETARIS">SEKRETARIS</option>
+                <option value="ANGGOTA">ANGGOTA</option>
+                <option value="SUPER_ADMIN">SUPER ADMIN</option>
+              </select>
+            </div>
+            <div><label style="font-size:12px;font-weight:600;">Password Awal (min. 8)</label><input id="new-u-pwd" class="input" type="password" required minlength="8" /></div>
+            <button type="submit" class="btn btn-primary">Tambah Akun</button>
+          </form>
+        </div>
+        <div class="card">
+          <h3 style="margin:0 0 12px;font-size:16px;">Daftar Akun Pengguna</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>ID User</th><th>ID Login</th><th>Nama</th><th>Role</th><th>Status</th><th>Login Terakhir</th><th>Aksi</th></tr>
+              </thead>
+              <tbody id="users-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 5: AUDIT LOG & BACKUP -->
+      <section id="tab-audit" class="hidden">
+        <div class="card" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+          <div>
+            <h3 style="margin:0 0 4px;font-size:16px;">Backup Database ke Google Drive</h3>
+            <div style="font-size:13px;color:#4b5563;">Salinan penuh Spreadsheet disimpan ke folder Backup_DB_Bani_Tohir.</div>
+          </div>
+          <button class="btn btn-primary" onclick="runBackupDrive()">Buat Backup Sekarang</button>
+        </div>
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+            <h3 style="margin:0;font-size:16px;">Jejak Audit Aktivitas (AUDIT_LOG)</h3>
+            <button class="btn btn-outline btn-sm" onclick="loadAuditLogs()">Muat Ulang</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Waktu (WIB)</th><th>Pengguna</th><th>Role</th><th>Aksi</th><th>Entitas</th><th>Catatan</th></tr></thead>
+              <tbody id="audit-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 6: GANTI PASSWORD -->
+      <section id="tab-password" class="hidden">
+        <div class="card" style="max-width:460px;">
+          <h3 style="margin:0 0 14px;font-size:16px;">Ganti Password Akun</h3>
+          <form onsubmit="handleChangePassword(event)">
+            <div class="field-group"><label>Password Lama</label><input id="pwd-old" class="input" type="password" required /></div>
+            <div class="field-group"><label>Password Baru (min. 8 karakter)</label><input id="pwd-new" class="input" type="password" required minlength="8" /></div>
+            <button type="submit" class="btn btn-primary">Simpan Password Baru</button>
+          </form>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      Sistem Informasi Keluarga Besar Bani Haji Mohammad Tohir · Guyub, Akur, Semedulur
+    </footer>
+  </div>
+</div>
+
+<!-- MODAL EDIT TANGGAL LAHIR / STAGING -->
+<div id="edit-modal" class="modal-backdrop hidden">
+  <div class="modal-box">
+    <h3 id="modal-title" style="margin:0 0 14px;font-size:17px;">Perbarui Tanggal Lahir &amp; Kode</h3>
+    <form onsubmit="submitModalEdit(event)">
+      <input type="hidden" id="edit-mode" />
+      <input type="hidden" id="edit-record-id" />
+      <div id="edit-kode-wrap" class="field-group hidden">
+        <label>Kode Silsilah</label>
+        <input id="edit-kode" class="input tabular" type="text" />
+      </div>
+      <div class="field-group">
+        <label>Tempat Lahir</label>
+        <input id="edit-tempat" class="input" type="text" />
+      </div>
+      <div class="field-group">
+        <label>Tanggal Lahir (Date Picker)</label>
+        <input id="edit-tgl" class="input tabular" type="date" />
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px;">
+        <button type="button" class="btn btn-outline" onclick="closeEditModal()">Batal</button>
+        <button type="submit" class="btn btn-primary">Simpan Perubahan</button>
+      </div>
+    </form>
+  </div>
+</div>

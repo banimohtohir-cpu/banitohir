@@ -1,0 +1,382 @@
+<script>
+  var APP_STATE = {
+    sessionToken: null,
+    user: null,
+    permissions: {}
+  };
+
+  window.addEventListener('DOMContentLoaded', function () {
+    google.script.run
+      .withSuccessHandler(function (res) {
+        if (!res || !res.ok) {
+          showAuthAlert(res ? res.message : 'Gagal memuat aplikasi.', true);
+          return;
+        }
+        if (res.needsSetup) {
+          document.getElementById('setup-admin-form').classList.remove('hidden');
+        } else {
+          document.getElementById('login-form').classList.remove('hidden');
+        }
+      })
+      .withFailureHandler(function (err) {
+        showAuthAlert(err.message || 'Gagal terhubung ke server.', true);
+      })
+      .apiGetBootstrapState();
+  });
+
+  function showAuthAlert(msg, isError) {
+    var el = document.getElementById('auth-alert');
+    el.textContent = msg;
+    el.className = 'alert ' + (isError ? 'alert-error' : 'alert-success');
+  }
+
+  function showGlobalAlert(msg, type) {
+    var el = document.getElementById('global-alert');
+    el.textContent = msg;
+    el.className = 'alert ' + (type === 'error' ? 'alert-error' : type === 'warn' ? 'alert-warn' : 'alert-success');
+    setTimeout(function () { el.classList.add('hidden'); }, 6000);
+  }
+
+  function handleFirstAdminSetup(e) {
+    e.preventDefault();
+    var payload = {
+      username: document.getElementById('setup-username').value,
+      nama_tampilan: document.getElementById('setup-name').value,
+      password: document.getElementById('setup-password').value
+    };
+    google.script.run
+      .withSuccessHandler(onAuthenticated)
+      .withFailureHandler(function (err) { showAuthAlert(err.message, true); })
+      .apiSetupFirstAdmin(payload);
+  }
+
+  function handleLogin(e) {
+    e.preventDefault();
+    var payload = {
+      username: document.getElementById('login-username').value,
+      password: document.getElementById('login-password').value
+    };
+    google.script.run
+      .withSuccessHandler(onAuthenticated)
+      .withFailureHandler(function (err) { showAuthAlert(err.message, true); })
+      .apiLogin(payload);
+  }
+
+  function onAuthenticated(res) {
+    if (!res || !res.ok) {
+      showAuthAlert(res ? res.message : 'Autentikasi gagal.', true);
+      return;
+    }
+    APP_STATE.sessionToken = res.sessionToken;
+    APP_STATE.user = res.user;
+    APP_STATE.permissions = res.permissions || {};
+
+    document.getElementById('auth-view').classList.add('hidden');
+    document.getElementById('app-view').classList.remove('hidden');
+    document.getElementById('sidebar-user-name').textContent = res.user.nama_tampilan;
+    document.getElementById('sidebar-user-role').textContent = res.user.role_id.replace('_', ' ');
+
+    if (res.user.must_change_pwd) {
+      showGlobalAlert('Anda menggunakan password sementara. Silakan segera ganti password di menu Ganti Password.', 'warn');
+    }
+    loadDashboard();
+  }
+
+  function handleLogout() {
+    var token = APP_STATE.sessionToken;
+    APP_STATE.sessionToken = null;
+    APP_STATE.user = null;
+    google.script.run.apiLogout(token);
+    document.getElementById('app-view').classList.add('hidden');
+    document.getElementById('auth-view').classList.remove('hidden');
+    document.getElementById('login-form').classList.remove('hidden');
+    document.getElementById('setup-admin-form').classList.add('hidden');
+    document.getElementById('login-password').value = '';
+  }
+
+  function switchTab(tabName) {
+    var sections = ['dashboard', 'migrasi', 'anggota', 'users', 'audit', 'password'];
+    sections.forEach(function (s) {
+      document.getElementById('tab-' + s).classList.toggle('hidden', s !== tabName);
+    });
+    document.querySelectorAll('.nav-item').forEach(function (btn) {
+      btn.classList.toggle('active', btn.getAttribute('data-tab') === tabName);
+    });
+    var labels = {
+      dashboard: 'Beranda / Dashboard',
+      migrasi: 'Migrasi & Staging Data Lama',
+      anggota: 'Data Anggota & Edit Tanggal Lahir',
+      users: 'Akun Pengguna & Hak Akses',
+      audit: 'Audit Log & Backup Database',
+      password: 'Keamanan / Ganti Password'
+    };
+    document.getElementById('breadcrumb-text').textContent = labels[tabName] || tabName;
+
+    if (tabName === 'dashboard') loadDashboard();
+    if (tabName === 'migrasi') loadStaging(1);
+    if (tabName === 'anggota') loadMembers(1);
+    if (tabName === 'users') loadUsers();
+    if (tabName === 'audit') loadAuditLogs();
+  }
+
+  function loadDashboard() {
+    google.script.run
+      .withSuccessHandler(function (res) {
+        if (!res || !res.ok) return showGlobalAlert(res ? res.message : 'Gagal memuat statistik.', 'error');
+        var s = res.stats;
+        document.getElementById('st-total').textContent = s.totalAnggota;
+        document.getElementById('st-kandung').textContent = s.kandung;
+        document.getElementById('st-menantu').textContent = s.menantu;
+        document.getElementById('st-hidup-wafat').textContent = s.hidup + ' / ' + s.wafat;
+        document.getElementById('st-kk').textContent = s.kepalaKeluarga;
+        document.getElementById('st-need-edit').textContent = s.perluLengkapiData;
+        document.getElementById('server-clock').textContent = s.serverTime || '';
+        document.getElementById('dash-source-note').textContent = s.isFromStaging
+          ? 'Statistik sementara dihitung dari MIGRASI_STAGING (lakukan Commit di menu Migrasi untuk menyimpan ke tabel produksi).'
+          : 'Statistik real-time dihitung dari sheet ANGGOTA & RUMAH_TANGGA.';
+
+        renderSimpleBarList('chart-generasi', s.perGenerasi, s.totalAnggota);
+        renderSimpleBarList('chart-cabang', s.perCabang, s.totalAnggota);
+      })
+      .apiGetDashboardStats(APP_STATE.sessionToken);
+  }
+
+  function renderSimpleBarList(containerId, objMap, total) {
+    var el = document.getElementById(containerId);
+    var keys = Object.keys(objMap || {});
+    if (keys.length === 0) {
+      el.innerHTML = '<div style="font-size:13px;color:#6b7280;">Belum ada data untuk ditampilkan.</div>';
+      return;
+    }
+    var html = '';
+    keys.forEach(function (k) {
+      var val = objMap[k];
+      var pct = total > 0 ? Math.round((val / total) * 100) : 0;
+      html += '<div style="margin-bottom:10px;">' +
+        '<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px;">' +
+        '<span>' + escapeHtml(k) + '</span><span class="tabular">' + val + ' (' + pct + '%)</span></div>' +
+        '<div style="height:8px;background:#e5e7eb;border-radius:4px;overflow:hidden;">' +
+        '<div style="height:100%;width:' + pct + '%;background:#15803d;"></div></div></div>';
+    });
+    el.innerHTML = html;
+  }
+
+  function runInitDatabase() {
+    google.script.run.withSuccessHandler(function (res) {
+      if (!res.ok) return showGlobalAlert(res.message, 'error');
+      showGlobalAlert('Inisialisasi selesai. Sheet baru: ' + res.createdSheets.length + ', Sheet sudah ada: ' + res.existingCount, 'success');
+    }).apiInitializeDatabase(APP_STATE.sessionToken);
+  }
+
+  function runArchiveSource() {
+    var sheetName = document.getElementById('src-sheet-name').value;
+    google.script.run.withSuccessHandler(function (res) {
+      if (!res.ok) return showGlobalAlert(res.message, 'error');
+      showGlobalAlert('Berhasil mengarsipkan ' + res.totalArchived + ' baris dari ' + res.sourceSheet + ' ke RAW_LEGACY_2026.', 'success');
+    }).apiArchiveSourceSheet(APP_STATE.sessionToken, sheetName);
+  }
+
+  function runDryRun() {
+    var mode = document.getElementById('code-gen-mode').value;
+    google.script.run.withSuccessHandler(function (res) {
+      if (!res.ok) return showGlobalAlert(res.message, 'error');
+      showGlobalAlert('Dry-run selesai untuk ' + res.totalStaging + ' baris dengan mode ' + mode + '.', 'success');
+      loadStaging(1);
+    }).apiRunMigrationDryRun(APP_STATE.sessionToken, { codeMode: mode, skipEmptyNames: true });
+  }
+
+  function runCommitMigration() {
+    google.script.run.withSuccessHandler(function (res) {
+      if (!res.ok) return showGlobalAlert(res.message, 'error');
+      showGlobalAlert('Commit berhasil! Ditambahkan ' + res.inserted.anggota + ' anggota, ' + res.inserted.pasangan + ' relasi pasangan, ' + res.inserted.rumahTangga + ' rumah tangga.', 'success');
+      loadDashboard();
+    }).apiCommitMigration(APP_STATE.sessionToken);
+  }
+
+  function loadStaging(page) {
+    var filter = document.getElementById('staging-filter').value;
+    var q = document.getElementById('staging-search').value;
+    google.script.run.withSuccessHandler(function (res) {
+      if (!res.ok) return showGlobalAlert(res.message, 'error');
+      var sum = res.summary;
+      document.getElementById('staging-summary-text').textContent =
+        'Total: ' + sum.total + ' · Siap: ' + sum.siap + ' · Perlu Edit Tgl Lahir: ' + sum.perluEditTgl + ' · Anomali Kode: ' + sum.anomaliKode + ' · Multi-Pasangan: ' + sum.multiPasangan;
+
+      var tbody = document.getElementById('staging-tbody');
+      if (res.rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" style="color:#6b7280;text-align:center;">Tidak ada data staging sesuai filter.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = res.rows.map(function (r) {
+        var kodeText = r.raw_kode === r.generated_kode
+          ? escapeHtml(r.generated_kode || '-')
+          : escapeHtml(r.raw_kode) + ' → <strong>' + escapeHtml(r.generated_kode) + '</strong>';
+        var ttlText = (r.tempat_lahir ? escapeHtml(r.tempat_lahir) + ', ' : '') + (r.tanggal_lahir_iso || r.raw_ttl || '-');
+        return '<tr>' +
+          '<td class="tabular">' + escapeHtml(r.id_anggota_calon || r.action_status) + '</td>' +
+          '<td class="tabular">' + kodeText + '</td>' +
+          '<td>' + escapeHtml([r.gelar_depan, r.nama_lengkap, r.gelar_belakang].filter(Boolean).join(' ') || '(Kosong)') + '</td>' +
+          '<td>' + escapeHtml(r.status_keturunan) + ' · ' + escapeHtml(r.generasi_label) + '</td>' +
+          '<td>' + ttlText + ' <div style="font-size:11px;color:#6b7280;">' + escapeHtml(r.presisi_tgl_lahir) + '</div></td>' +
+          '<td style="font-size:12px;color:#92400e;">' + escapeHtml(r.anomaly_flags || '-') + '</td>' +
+          '<td><button class="btn btn-outline btn-sm" onclick="openEditModal(\'STAGING\', \'' + escapeHtml(r.staging_id) + '\', \'' + escapeHtml(r.generated_kode) + '\', \'' + escapeHtml(r.tempat_lahir) + '\', \'' + escapeHtml(r.tanggal_lahir_iso) + '\')">Edit</button></td>' +
+          '</tr>';
+      }).join('');
+    }).apiGetStagingRows(APP_STATE.sessionToken, filter, q, page || 1, 30);
+  }
+
+  function loadMembers(page) {
+    var q = document.getElementById('member-search').value;
+    var needEdit = document.getElementById('filter-need-edit-dob').checked;
+    google.script.run.withSuccessHandler(function (res) {
+      if (!res.ok) return showGlobalAlert(res.message, 'error');
+      var tbody = document.getElementById('members-tbody');
+      if (res.rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" style="color:#6b7280;text-align:center;">Belum ada data anggota. Jalankan Commit Migrasi terlebih dahulu.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = res.rows.map(function (m) {
+        return '<tr>' +
+          '<td class="tabular">' + escapeHtml(m.id_anggota) + '</td>' +
+          '<td class="tabular">' + escapeHtml(m.kode_silsilah) + '</td>' +
+          '<td>' + escapeHtml([m.gelar_depan, m.nama_lengkap, m.gelar_belakang].filter(Boolean).join(' ')) + '</td>' +
+          '<td>' + escapeHtml(m.generasi_label) + ' · ' + escapeHtml(m.status_keturunan) + '</td>' +
+          '<td class="tabular">' + escapeHtml(m.tempat_lahir || '-') + ', ' + escapeHtml(m.tanggal_lahir || 'Belum diisi') + '</td>' +
+          '<td>' + escapeHtml(m.status_hidup) + '</td>' +
+          '<td><button class="btn btn-outline btn-sm" onclick="openEditModal(\'MEMBER\', \'' + escapeHtml(m.id_anggota) + '\', \'\', \'' + escapeHtml(m.tempat_lahir || '') + '\', \'' + escapeHtml(m.tanggal_lahir || '') + '\')">Edit Tgl Lahir</button></td>' +
+          '</tr>';
+      }).join('');
+    }).apiListMembersPreview(APP_STATE.sessionToken, q, needEdit, page || 1, 30);
+  }
+
+  function openEditModal(mode, id, kode, tempat, tglIso) {
+    document.getElementById('edit-mode').value = mode;
+    document.getElementById('edit-record-id').value = id;
+    document.getElementById('edit-kode').value = kode || '';
+    document.getElementById('edit-tempat').value = tempat || '';
+    document.getElementById('edit-tgl').value = tglIso || '';
+    document.getElementById('edit-kode-wrap').classList.toggle('hidden', mode !== 'STAGING');
+    document.getElementById('edit-modal').classList.remove('hidden');
+  }
+
+  function closeEditModal() {
+    document.getElementById('edit-modal').classList.add('hidden');
+  }
+
+  function submitModalEdit(e) {
+    e.preventDefault();
+    var mode = document.getElementById('edit-mode').value;
+    var id = document.getElementById('edit-record-id').value;
+    var tempat = document.getElementById('edit-tempat').value;
+    var tgl = document.getElementById('edit-tgl').value;
+
+    if (mode === 'STAGING') {
+      var kode = document.getElementById('edit-kode').value;
+      google.script.run.withSuccessHandler(function (res) {
+        if (!res.ok) return showGlobalAlert(res.message, 'error');
+        closeEditModal();
+        showGlobalAlert('Data staging diperbarui.', 'success');
+        loadStaging(1);
+      }).apiUpdateStagingRow(APP_STATE.sessionToken, id, {
+        generated_kode: kode,
+        tempat_lahir: tempat,
+        tanggal_lahir_iso: tgl
+      });
+    } else {
+      google.script.run.withSuccessHandler(function (res) {
+        if (!res.ok) return showGlobalAlert(res.message, 'error');
+        closeEditModal();
+        showGlobalAlert('Tanggal lahir anggota berhasil diperbarui.', 'success');
+        loadMembers(1);
+      }).apiUpdateMemberBirthdate(APP_STATE.sessionToken, id, tempat, tgl, tgl ? 'LENGKAP' : 'KOSONG');
+    }
+  }
+
+  function loadUsers() {
+    google.script.run.withSuccessHandler(function (res) {
+      if (!res.ok) return showGlobalAlert(res.message, 'error');
+      document.getElementById('users-tbody').innerHTML = res.users.map(function (u) {
+        var nextStatus = u.status_akun === 'AKTIF' ? 'NONAKTIF' : 'AKTIF';
+        return '<tr>' +
+          '<td class="tabular">' + escapeHtml(u.user_id) + '</td>' +
+          '<td class="tabular">' + escapeHtml(u.username_login) + '</td>' +
+          '<td>' + escapeHtml(u.nama_tampilan) + '</td>' +
+          '<td>' + escapeHtml(u.role_id) + '</td>' +
+          '<td>' + escapeHtml(u.status_akun) + '</td>' +
+          '<td class="tabular">' + escapeHtml(u.last_login || '-') + '</td>' +
+          '<td><button class="btn btn-outline btn-sm" onclick="toggleUserStatus(\'' + escapeHtml(u.user_id) + '\', \'' + u.role_id + '\', \'' + nextStatus + '\')">' +
+          (u.status_akun === 'AKTIF' ? 'Nonaktifkan' : 'Aktifkan') + '</button></td>' +
+          '</tr>';
+      }).join('');
+    }).apiListUsers(APP_STATE.sessionToken);
+  }
+
+  function handleCreateUser(e) {
+    e.preventDefault();
+    google.script.run.withSuccessHandler(function (res) {
+      if (!res.ok) return showGlobalAlert(res.message, 'error');
+      showGlobalAlert('Akun baru berhasil dibuat.', 'success');
+      e.target.reset();
+      loadUsers();
+    }).apiCreateUser(APP_STATE.sessionToken, {
+      username_login: document.getElementById('new-u-login').value,
+      nama_tampilan: document.getElementById('new-u-name').value,
+      role_id: document.getElementById('new-u-role').value,
+      password: document.getElementById('new-u-pwd').value
+    });
+  }
+
+  function toggleUserStatus(userId, roleId, nextStatus) {
+    google.script.run.withSuccessHandler(function (res) {
+      if (!res.ok) return showGlobalAlert(res.message, 'error');
+      showGlobalAlert(res.message, 'success');
+      loadUsers();
+    }).apiUpdateUserRoleStatus(APP_STATE.sessionToken, userId, roleId, nextStatus);
+  }
+
+  function loadAuditLogs() {
+    google.script.run.withSuccessHandler(function (res) {
+      if (!res.ok) return showGlobalAlert(res.message, 'error');
+      document.getElementById('audit-tbody').innerHTML = res.logs.map(function (l) {
+        return '<tr>' +
+          '<td class="tabular">' + escapeHtml(l.timestamp) + '</td>' +
+          '<td>' + escapeHtml(l.username) + '</td>' +
+          '<td>' + escapeHtml(l.role) + '</td>' +
+          '<td class="tabular">' + escapeHtml(l.aksi) + '</td>' +
+          '<td>' + escapeHtml(l.entitas) + '</td>' +
+          '<td>' + escapeHtml(l.catatan) + '</td>' +
+          '</tr>';
+      }).join('');
+    }).apiGetAuditLogs(APP_STATE.sessionToken, 100, '');
+  }
+
+  function runBackupDrive() {
+    google.script.run.withSuccessHandler(function (res) {
+      if (!res.ok) return showGlobalAlert(res.message, 'error');
+      showGlobalAlert('Backup tersimpan di Google Drive: ' + res.fileName, 'success');
+      loadAuditLogs();
+    }).apiBackupDatabase(APP_STATE.sessionToken);
+  }
+
+  function handleChangePassword(e) {
+    e.preventDefault();
+    google.script.run.withSuccessHandler(function (res) {
+      if (!res.ok) return showGlobalAlert(res.message, 'error');
+      showGlobalAlert(res.message, 'success');
+      e.target.reset();
+    }).apiChangeOwnPassword(
+      APP_STATE.sessionToken,
+      document.getElementById('pwd-old').value,
+      document.getElementById('pwd-new').value
+    );
+  }
+
+  function escapeHtml(str) {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+</script>

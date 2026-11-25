@@ -1,0 +1,50 @@
+<div id="auth-view" class="auth-wrapper">
+  <div class="auth-hero">
+    <div>
+      <div style="font-size:13px;font-weight:600;color:#fde047;letter-spacing:0.04em;">PAGUYUBAN KELUARGA BESAR</div>
+      <h1>Sistem Informasi Keluarga Besar Bani Haji Mohammad Tohir</h1>
+      <p>Guyub, Akur, Semedulur. Pusat data silsilah keluarga lintas generasi, administrasi rumah tangga, kepengurusan paguyuban, dan pengelolaan keuangan yang aman serta transparan.</p>
+    </div>
+    <div style="font-size:13px;color:#bbf7d0;">
+      Basis Data Google Spreadsheet · Zona Waktu Asia/Jakarta (WIB)
+    </div>
+  </div>
+
+  <div class="auth-panel">
+    <div id="auth-alert" class="alert hidden"></div>
+
+    <!-- Form Setup Pertama Kali jika belum ada Super Admin -->
+    <form id="setup-admin-form" class="hidden" onsubmit="handleFirstAdminSetup(event)">
+      <h2 style="margin:0 0 6px;font-size:20px;">Aktivasi Admin Pertama</h2>
+      <p style="margin:0 0 20px;font-size:13px;color:#4b5563;">Belum ada akun Super Admin di database. Buat akun pertama untuk menginisialisasi sistem.</p>
+      <div class="field-group">
+        <label for="setup-username">ID Login</label>
+        <input id="setup-username" class="input" type="text" required minlength="4" placeholder="Contoh: admin.tohir" />
+      </div>
+      <div class="field-group">
+        <label for="setup-name">Nama Tampilan</label>
+        <input id="setup-name" class="input" type="text" required placeholder="Contoh: Heri Setiawan" />
+      </div>
+      <div class="field-group">
+        <label for="setup-password">Password (minimal 8 karakter)</label>
+        <input id="setup-password" class="input" type="password" required minlength="8" />
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%;">Buat Akun &amp; Inisialisasi Database</button>
+    </form>
+
+    <!-- Form Login Standar -->
+    <form id="login-form" class="hidden" onsubmit="handleLogin(event)">
+      <h2 style="margin:0 0 6px;font-size:20px;">Masuk ke Aplikasi</h2>
+      <p style="margin:0 0 20px;font-size:13px;color:#4b5563;">Gunakan ID Login dan Password yang terdaftar pada paguyuban.</p>
+      <div class="field-group">
+        <label for="login-username">ID Login</label>
+        <input id="login-username" class="input" type="text" required autocomplete="username" />
+      </div>
+      <div class="field-group">
+        <label for="login-password">Password</label>
+        <input id="login-password" class="input" type="password" required autocomplete="current-password" />
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%;">Masuk</button>
+    </form>
+  </div>
+</div>
