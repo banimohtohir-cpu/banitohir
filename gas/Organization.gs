@@ -9,23 +9,41 @@ function getOrganizationBundle(sessionToken) {
   var isPengurusPlus = ['SUPER_ADMIN', 'ADMIN_KELUARGA', 'PENGURUS', 'SEKRETARIS', 'BENDAHARA'].indexOf(actor.role_id) > -1;
 
   var anggota = readSheetObjects(SHEET_NAMES.ANGGOTA, true);
-  var memberMap = {};
-  anggota.forEach(function (m) { memberMap[m.id_anggota] = m.nama_lengkap; });
+  var memberNameMap = {};
+  var memberObjMap = {};
+  anggota.forEach(function (m) {
+    memberNameMap[m.id_anggota] = m.nama_lengkap;
+    memberObjMap[m.id_anggota] = m;
+  });
 
   var jabatan = readSheetObjects(SHEET_NAMES.JABATAN, true);
   var jabMap = {};
-  jabatan.forEach(function (j) { jabMap[j.jabatan_id] = j.nama_jabatan; });
+  jabatan.forEach(function (j) { jabMap[j.jabatan_id] = j; });
 
   var pengurus = readSheetObjects(SHEET_NAMES.PENGURUS, true).map(function (p) {
+    var m = memberObjMap[p.id_anggota] || {};
+    var j = jabMap[p.jabatan_id] || {};
+    var fullName = [m.gelar_depan, m.nama_lengkap, m.gelar_belakang].filter(Boolean).join(' ') || p.id_anggota;
+    var alamatParts = [m.nama_jalan, m.keterangan_alamat].filter(Boolean);
     return Object.assign({}, p, {
-      nama_anggota: memberMap[p.id_anggota] || p.id_anggota,
-      nama_jabatan: jabMap[p.jabatan_id] || p.jabatan_id
+      nama_anggota: fullName,
+      kode_silsilah: m.kode_silsilah || '',
+      generasi_level: m.generasi_level,
+      generasi_label: m.generasi_label || '',
+      status_keturunan: m.status_keturunan || '',
+      alamat_lengkap: alamatParts.join(' · '),
+      no_hp: m.no_hp || '',
+      email: m.email || '',
+      foto_drive_id: m.foto_drive_id || '',
+      nama_jabatan: j.nama_jabatan || p.jabatan_id,
+      deskripsi_tugas: j.deskripsi_tugas || '',
+      level_hierarki: j.level_hierarki || 99
     });
   });
 
   var kegiatan = readSheetObjects(SHEET_NAMES.KEGIATAN, true).map(function (k) {
     return Object.assign({}, k, {
-      nama_pj: memberMap[k.id_penanggung_jawab] || k.id_penanggung_jawab
+      nama_pj: memberNameMap[k.id_penanggung_jawab] || k.id_penanggung_jawab
     });
   });
 

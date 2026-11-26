@@ -68,6 +68,43 @@ function isSafeHttpUrl(url: string): boolean {
   return /^https?:\/\//i.test(url.trim());
 }
 
+function sanitizePhotoInput(raw: unknown): string {
+  const val = String(raw ?? '').trim();
+  if (!val) return '';
+  if (/^data:image\/(jpeg|jpg|png|webp);base64,[A-Za-z0-9+/=]+$/i.test(val) && val.length <= 450000) {
+    return val;
+  }
+  if (/^https?:\/\/.+/i.test(val) && val.length <= 1500) {
+    return val;
+  }
+  if (/^[A-Za-z0-9_-]{10,80}$/.test(val)) {
+    return val;
+  }
+  return '';
+}
+
+function formatMemberAddress(m: MemberRecord): string {
+  const wilayahMap = new Map(store.masterWilayah.map((w) => [`${w.tingkat}:${w.kode_wilayah}`, w.nama_wilayah]));
+  const streetParts = [
+    m.nama_jalan,
+    m.no_rumah ? `No. ${m.no_rumah}` : '',
+    m.rt || m.rw ? `RT ${m.rt || '-'}/RW ${m.rw || '-'}` : '',
+  ].filter(Boolean);
+  const regionParts = [
+    m.kelurahan_id ? wilayahMap.get(`DESA:${m.kelurahan_id}`) : '',
+    m.kecamatan_id ? wilayahMap.get(`KEC:${m.kecamatan_id}`) : '',
+    m.kabkota_id ? wilayahMap.get(`KAB:${m.kabkota_id}`) : '',
+    m.provinsi_id ? wilayahMap.get(`PROV:${m.provinsi_id}`) : '',
+  ].filter(Boolean);
+  const structured = [...streetParts, ...regionParts, m.kode_pos].filter(Boolean).join(', ');
+  if (m.keterangan_alamat && structured) {
+    return m.keterangan_alamat.toLowerCase() === structured.toLowerCase()
+      ? m.keterangan_alamat
+      : `${m.keterangan_alamat} (${structured})`;
+  }
+  return m.keterangan_alamat || structured || '';
+}
+
 function projectMemberForRole(m: MemberRecord, canSensitive: boolean): MemberRecord {
   if (canSensitive) return m;
   return {
@@ -901,6 +938,7 @@ async function startServer() {
       gelar_belakang: String(req.body?.gelar_belakang || '').trim(),
       nama_panggilan: String(req.body?.nama_panggilan || '').trim(),
       jenis_kelamin: String(req.body?.jenis_kelamin || '').trim(),
+      foto_drive_id: sanitizePhotoInput(req.body?.foto_drive_id),
       status_keturunan: resolvedStatusKeturunan,
       generasi_level: isNaN(genLevel) ? 1 : genLevel,
       generasi_label: resolvedGenLabel,
@@ -1012,6 +1050,7 @@ async function startServer() {
     if (body.gelar_belakang !== undefined) member.gelar_belakang = String(body.gelar_belakang).trim();
     if (body.nama_panggilan !== undefined) member.nama_panggilan = String(body.nama_panggilan).trim();
     if (body.jenis_kelamin !== undefined) member.jenis_kelamin = String(body.jenis_kelamin).trim();
+    if (body.foto_drive_id !== undefined) member.foto_drive_id = sanitizePhotoInput(body.foto_drive_id);
     if (body.status_keturunan !== undefined) member.status_keturunan = String(body.status_keturunan).trim();
 
     if (body.generasi_level !== undefined) {
@@ -2100,9 +2139,17 @@ async function startServer() {
       const j = jabMap.get(p.jabatan_id);
       return {
         ...p,
-        nama_anggota: m ? `${m.gelar_depan ? m.gelar_depan + ' ' : ''}${m.nama_lengkap}` : p.id_anggota,
+        nama_anggota: m ? [m.gelar_depan, m.nama_lengkap, m.gelar_belakang].filter(Boolean).join(' ') : p.id_anggota,
         kode_silsilah: m?.kode_silsilah || '',
+        generasi_level: m?.generasi_level ?? null,
+        generasi_label: m?.generasi_label || '',
+        status_keturunan: m?.status_keturunan || '',
+        alamat_lengkap: m ? formatMemberAddress(m) : '',
+        no_hp: m?.no_hp || '',
+        email: m?.email || '',
+        foto_drive_id: m?.foto_drive_id || '',
         nama_jabatan: j?.nama_jabatan || p.jabatan_id,
+        deskripsi_tugas: j?.deskripsi_tugas || '',
         level_hierarki: j?.level_hierarki || 99,
       };
     });
@@ -2174,7 +2221,8 @@ async function startServer() {
       res.status(400).json({ ok: false, message: 'Jabatan dan anggota wajib dipilih.' });
       return;
     }
-    if (!store.members.some((m) => m.id_anggota === idAnggota)) {
+    const targetMember = store.members.find((m) => m.id_anggota === idAnggota);
+    if (!targetMember) {
       res.status(404).json({ ok: false, message: 'Anggota tidak ditemukan.' });
       return;
     }
@@ -2196,8 +2244,30 @@ async function startServer() {
     if (existing) Object.assign(existing, payload);
     else store.pengurus.push(payload);
 
+    const mu = req.body?.member_updates;
+    if (mu && typeof mu === 'object') {
+      if (mu.foto_drive_id !== undefined) targetMember.foto_drive_id = sanitizePhotoInput(mu.foto_drive_id);
+      if (mu.no_hp !== undefined) targetMember.no_hp = String(mu.no_hp).trim();
+      if (mu.email !== undefined) targetMember.email = String(mu.email).trim();
+      if (mu.keterangan_alamat !== undefined) targetMember.keterangan_alamat = String(mu.keterangan_alamat).trim();
+      targetMember.updated_at = nowJakartaIso();
+    }
+
+    store.saveToDisk();
     store.addAudit(req.authUser!, 'SIMPAN_PENGURUS', 'PENGURUS', id, `${jabId} -> ${idAnggota}`);
     res.json({ ok: true, pengurus: payload });
+  });
+
+  app.delete('/api/organization/board/:id', requireAuth('ORGANISASI', 'can_edit'), (req: AuthedRequest, res) => {
+    const idx = store.pengurus.findIndex((p) => p.pengurus_id === req.params.id);
+    if (idx === -1) {
+      res.status(404).json({ ok: false, message: 'Data pengurus tidak ditemukan.' });
+      return;
+    }
+    const [removed] = store.pengurus.splice(idx, 1);
+    store.saveToDisk();
+    store.addAudit(req.authUser!, 'HAPUS_PENGURUS', 'PENGURUS', removed.pengurus_id, `${removed.jabatan_id} -> ${removed.id_anggota}`);
+    res.json({ ok: true });
   });
 
   app.post('/api/organization/activities', requireAuth('ORGANISASI', 'can_create'), (req: AuthedRequest, res) => {

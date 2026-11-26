@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BookOpen,
   CheckCircle2,
+  Download,
   FileSpreadsheet,
   Plus,
   Printer,
@@ -19,11 +20,17 @@ import {
   TransaksiEnriched,
 } from '../types';
 import { SearchableSelect } from './SearchableSelect';
+import { PrintPreviewModal, printElementViaIframe } from './PrintPreviewModal';
 import {
   exportFinanceWorkbookExcel,
   exportIuranToExcel,
   exportTransactionsToExcel,
 } from '../utils/exportExcel';
+import {
+  generateFinanceReportPdf,
+  generateReceiptPdf,
+  generateTablePdf,
+} from '../utils/exportPdf';
 
 interface FinanceTabProps {
   token: string;
@@ -75,6 +82,7 @@ export function FinanceTab({ token, permission, onDataChanged, onNotify }: Finan
   const [genJatuhTempo, setGenJatuhTempo] = useState('2026-12-31');
 
   const [receiptPreview, setReceiptPreview] = useState<PembayaranEnriched | null>(null);
+  const receiptSheetRef = useRef<HTMLDivElement>(null);
 
   // Transaksi baru
   const [showTrxModal, setShowTrxModal] = useState(false);
@@ -127,14 +135,6 @@ export function FinanceTab({ token, permission, onDataChanged, onNotify }: Finan
 
   function triggerPrint(scope: Exclude<PrintScope, null>) {
     setPrintScope(scope);
-    const cleanup = () => {
-      setPrintScope(null);
-      window.removeEventListener('afterprint', cleanup);
-    };
-    window.addEventListener('afterprint', cleanup);
-    window.setTimeout(() => {
-      window.print();
-    }, 150);
   }
 
   async function handleSubmitPayment(e: React.FormEvent) {
@@ -1278,186 +1278,261 @@ export function FinanceTab({ token, permission, onDataChanged, onNotify }: Finan
         </div>
       )}
 
-      {/* DEDICATED PRINT VIEWS (only shown when window.print() is active, unless receipt modal is open) */}
-      {!receiptPreview && (
-        <div className="hidden print:block bg-white p-4 text-xs space-y-5">
-          <div className="border-b-2 border-green-900 pb-3 flex items-start justify-between">
-            <div>
-              <div className="text-base font-bold text-green-900 uppercase">
-                Paguyuban Keluarga Besar Bani Haji Mohammad Tohir
-              </div>
-              <div className="text-xs text-neutral-600 mt-0.5">
-                Guyub, Akur, Semedulur ·{' '}
-                {activePrintScope === 'laporan'
-                  ? `Laporan Keuangan Resmi Tahun Buku ${tahun}`
-                  : activePrintScope === 'transaksi'
-                  ? `Daftar Transaksi ${trxFilterLabel} Tahun Buku ${tahun}`
-                  : `Daftar Target & Realisasi Iuran Tahun ${tahun}`}
-              </div>
-            </div>
-            <div className="text-right text-[11px] font-mono text-neutral-600">
-              Dicetak: {new Date().toLocaleDateString('id-ID')}
-            </div>
+      {/* KONSEP FORMAT CETAK & GENERATE PDF (Iuran, Transaksi, Laporan Keuangan) */}
+      <PrintPreviewModal
+        open={printScope !== null && !receiptPreview}
+        onClose={() => setPrintScope(null)}
+        title={
+          activePrintScope === 'laporan'
+            ? `Laporan Keuangan Resmi Tahun Buku ${tahun}`
+            : activePrintScope === 'transaksi'
+            ? `Daftar Transaksi ${trxFilterLabel} Tahun Buku ${tahun}`
+            : `Daftar Target & Realisasi Iuran Tahun ${tahun}`
+        }
+        subtitle={
+          activePrintScope === 'laporan'
+            ? 'Laporan Aktivitas (Pendapatan & Beban) dan Neraca Posisi Keuangan Paguyuban'
+            : activePrintScope === 'transaksi'
+            ? `Menampilkan ${filteredTrx.length} transaksi tercatat (Realisasi Iuran otomatis diakui sebagai Pemasukan)`
+            : `Menampilkan ${filteredBills.length} wajib iuran sesuai filter aktif`
+        }
+        orientation={activePrintScope === 'laporan' ? 'portrait' : 'landscape'}
+        summary={
+          activePrintScope === 'laporan'
+            ? [
+                { label: 'Total Kas & Bank', value: formatRp(data.summary.totalKasBank) },
+                { label: 'Pendapatan Diakui', value: formatRp(data.summary.totalPendapatan) },
+                { label: 'Total Beban', value: formatRp(data.summary.totalBeban) },
+                { label: 'Surplus / (Defisit)', value: formatRp(data.summary.surplusDefisit) },
+              ]
+            : activePrintScope === 'transaksi'
+            ? [
+                { label: 'Pemasukan Iuran', value: formatRp(data.summary.totalPemasukanIuran ?? data.summary.totalTerbayarIuran) },
+                { label: 'Pemasukan Lainnya', value: formatRp(data.summary.totalPemasukanLainnya ?? 0) },
+                { label: 'Total Pengeluaran', value: formatRp(data.summary.totalPengeluaranKas ?? data.summary.totalBeban) },
+                { label: 'Jumlah Transaksi', value: `${filteredTrx.length} bukti` },
+              ]
+            : [
+                { label: 'Total Target Iuran', value: formatRp(data.summary.totalTargetIuran) },
+                { label: 'Realisasi Terbayar', value: formatRp(data.summary.totalTerbayarIuran) },
+                { label: 'Sisa Belum Masuk', value: formatRp(data.summary.totalSisaIuran) },
+                { label: 'Wajib Iuran Tercetak', value: `${filteredBills.length} KK` },
+              ]
+        }
+        leftSignerTitle="Mengetahui, Ketua Paguyuban"
+        rightSignerTitle="Bendahara Paguyuban"
+        onNotify={onNotify}
+        onDownloadPdf={() => {
+          if (activePrintScope === 'laporan') {
+            generateFinanceReportPdf(data, tahun);
+          } else if (activePrintScope === 'transaksi') {
+            generateTablePdf({
+              filename: `daftar_transaksi_${trxFilterLabel.toLowerCase().replace(/[^a-z0-9]+/g, '_')}_${tahun}.pdf`,
+              title: `Daftar Transaksi ${trxFilterLabel} Tahun Buku ${tahun}`,
+              subtitle: `Menampilkan ${filteredTrx.length} transaksi keuangan Paguyuban`,
+              orientation: 'landscape',
+              summary: [
+                { label: 'Pemasukan Iuran', value: formatRp(data.summary.totalPemasukanIuran ?? data.summary.totalTerbayarIuran) },
+                { label: 'Pemasukan Lainnya', value: formatRp(data.summary.totalPemasukanLainnya ?? 0) },
+                { label: 'Total Pengeluaran', value: formatRp(data.summary.totalPengeluaranKas ?? data.summary.totalBeban) },
+                { label: 'Jumlah Transaksi', value: `${filteredTrx.length} bukti` },
+              ],
+              headers: ['No', 'No. Bukti', 'Tanggal', 'Jenis', 'Keterangan', 'Nominal', 'Status'],
+              rows: filteredTrx.map((t, i) => [
+                i + 1,
+                t.no_transaksi,
+                t.tanggal_transaksi,
+                t.jenis_transaksi,
+                t.keterangan,
+                formatRp(t.total_nominal),
+                t.status_verifikasi,
+              ]),
+              columnAlignments: { 0: 'center', 5: 'right' },
+              leftSignerTitle: 'Mengetahui, Ketua Paguyuban',
+              rightSignerTitle: 'Bendahara Paguyuban',
+            });
+          } else {
+            generateTablePdf({
+              filename: `daftar_iuran_bani_tohir_${tahun}.pdf`,
+              title: `Daftar Target & Realisasi Iuran Tahun ${tahun}`,
+              subtitle: `Menampilkan ${filteredBills.length} wajib iuran`,
+              orientation: 'landscape',
+              summary: [
+                { label: 'Total Target Iuran', value: formatRp(data.summary.totalTargetIuran) },
+                { label: 'Realisasi Terbayar', value: formatRp(data.summary.totalTerbayarIuran) },
+                { label: 'Sisa Target', value: formatRp(data.summary.totalSisaIuran) },
+                { label: 'Jumlah Tercetak', value: `${filteredBills.length} data` },
+              ],
+              headers: ['No', 'Kode', 'Nama Wajib Iuran', 'Rumah Tangga', 'Target', 'Keringanan', 'Realisasi', 'Sisa', 'Tgl Iuran', 'Status'],
+              rows: filteredBills.map((b, i) => [
+                i + 1,
+                b.kode_silsilah || b.id_kk,
+                b.nama_anggota || b.id_kk,
+                b.nama_rumah_tangga || '-',
+                formatRp(b.nominal_tagihan),
+                formatRp(b.diskon_pembebasan),
+                formatRp(b.total_terbayar),
+                formatRp(b.sisa_tagihan),
+                b.tanggal_bayar_terakhir || '-',
+                b.status_bayar.replace('_', ' '),
+              ]),
+              columnAlignments: { 0: 'center', 4: 'right', 5: 'right', 6: 'right', 7: 'right' },
+              leftSignerTitle: 'Mengetahui, Ketua Paguyuban',
+              rightSignerTitle: 'Bendahara Paguyuban',
+            });
+          }
+        }}
+      >
+        {activePrintScope === 'iuran' && data.canDetail && (
+          <table className="w-full text-left border-collapse text-[11px]">
+            <thead>
+              <tr className="bg-green-800 text-white font-semibold">
+                <th className="py-2 px-2 border border-green-900 text-center w-9">No</th>
+                <th className="py-2 px-2 border border-green-900">Kode</th>
+                <th className="py-2 px-2 border border-green-900">Nama Wajib Iuran</th>
+                <th className="py-2 px-2 border border-green-900">Rumah Tangga</th>
+                <th className="py-2 px-2 border border-green-900 text-right">Target</th>
+                <th className="py-2 px-2 border border-green-900 text-right">Keringanan</th>
+                <th className="py-2 px-2 border border-green-900 text-right">Realisasi</th>
+                <th className="py-2 px-2 border border-green-900 text-right">Sisa</th>
+                <th className="py-2 px-2 border border-green-900">Tgl Iuran</th>
+                <th className="py-2 px-2 border border-green-900">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredBills.map((b, i) => (
+                <tr key={b.tagihan_id} className={i % 2 === 1 ? 'bg-neutral-50' : 'bg-white'}>
+                  <td className="py-1.5 px-2 border border-neutral-200 font-mono text-center">{i + 1}</td>
+                  <td className="py-1.5 px-2 border border-neutral-200 font-mono">{b.kode_silsilah || b.id_kk}</td>
+                  <td className="py-1.5 px-2 border border-neutral-200 font-medium">{b.nama_anggota || b.id_kk}</td>
+                  <td className="py-1.5 px-2 border border-neutral-200">{b.nama_rumah_tangga || '-'}</td>
+                  <td className="py-1.5 px-2 border border-neutral-200 text-right font-mono tabular-nums">{formatRp(b.nominal_tagihan)}</td>
+                  <td className="py-1.5 px-2 border border-neutral-200 text-right font-mono tabular-nums">{formatRp(b.diskon_pembebasan)}</td>
+                  <td className="py-1.5 px-2 border border-neutral-200 text-right font-mono tabular-nums text-green-800 font-semibold">{formatRp(b.total_terbayar)}</td>
+                  <td className="py-1.5 px-2 border border-neutral-200 text-right font-mono tabular-nums">{formatRp(b.sisa_tagihan)}</td>
+                  <td className="py-1.5 px-2 border border-neutral-200 font-mono tabular-nums">{b.tanggal_bayar_terakhir || '-'}</td>
+                  <td className="py-1.5 px-2 border border-neutral-200">{b.status_bayar.replace('_', ' ')}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+
+        {activePrintScope === 'iuran' && !data.canDetail && (
+          <div className="p-4 border border-neutral-200 rounded-lg text-xs text-neutral-700">
+            Ringkasan Transparansi Iuran {tahun}: Target{' '}
+            <strong className="font-mono">{formatRp(data.summary.totalTargetIuran)}</strong> · Realisasi{' '}
+            <strong className="font-mono text-green-800">{formatRp(data.summary.totalTerbayarIuran)}</strong>.
           </div>
+        )}
 
-          {activePrintScope === 'iuran' && data.canDetail && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-3 gap-3 border border-neutral-300 rounded p-3">
-                <div>
-                  <div className="text-[11px] text-neutral-500">Total Target Iuran</div>
-                  <div className="font-mono font-bold">{formatRp(data.summary.totalTargetIuran)}</div>
-                </div>
-                <div>
-                  <div className="text-[11px] text-neutral-500">Total Realisasi Terbayar</div>
-                  <div className="font-mono font-bold text-green-800">{formatRp(data.summary.totalTerbayarIuran)}</div>
-                </div>
-                <div>
-                  <div className="text-[11px] text-neutral-500">Sisa Target</div>
-                  <div className="font-mono font-bold">{formatRp(data.summary.totalSisaIuran)}</div>
-                </div>
-              </div>
+        {activePrintScope === 'transaksi' && (
+          <table className="w-full text-left border-collapse text-[11px]">
+            <thead>
+              <tr className="bg-green-800 text-white font-semibold">
+                <th className="py-2 px-2 border border-green-900 text-center w-9">No</th>
+                <th className="py-2 px-2 border border-green-900">No. Bukti</th>
+                <th className="py-2 px-2 border border-green-900">Tanggal</th>
+                <th className="py-2 px-2 border border-green-900">Jenis</th>
+                <th className="py-2 px-2 border border-green-900">Keterangan</th>
+                <th className="py-2 px-2 border border-green-900 text-right">Nominal</th>
+                <th className="py-2 px-2 border border-green-900">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredTrx.map((t, idx) => (
+                <tr key={t.transaksi_id} className={idx % 2 === 1 ? 'bg-neutral-50' : 'bg-white'}>
+                  <td className="py-1.5 px-2 border border-neutral-200 font-mono text-center">{idx + 1}</td>
+                  <td className="py-1.5 px-2 border border-neutral-200 font-mono font-semibold">{t.no_transaksi}</td>
+                  <td className="py-1.5 px-2 border border-neutral-200 font-mono tabular-nums">{t.tanggal_transaksi}</td>
+                  <td className="py-1.5 px-2 border border-neutral-200">{t.jenis_transaksi}</td>
+                  <td className="py-1.5 px-2 border border-neutral-200">{t.keterangan}</td>
+                  <td className="py-1.5 px-2 border border-neutral-200 text-right font-mono tabular-nums font-semibold">{formatRp(t.total_nominal)}</td>
+                  <td className="py-1.5 px-2 border border-neutral-200">{t.status_verifikasi}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+
+        {activePrintScope === 'laporan' && (
+          <div className="space-y-5">
+            <div className="space-y-2">
+              <div className="font-bold text-xs text-neutral-900">I. Laporan Aktivitas (Pendapatan &amp; Beban)</div>
               <table className="w-full text-left border-collapse text-[11px]">
                 <thead>
-                  <tr className="border-b border-neutral-400 text-neutral-700 font-bold">
-                    <th className="py-1.5 pr-2">No</th>
-                    <th className="py-1.5 px-2">Kode</th>
-                    <th className="py-1.5 px-2">Nama Wajib Iuran</th>
-                    <th className="py-1.5 px-2 text-right">Target</th>
-                    <th className="py-1.5 px-2 text-right">Realisasi</th>
-                    <th className="py-1.5 px-2 text-right">Sisa</th>
-                    <th className="py-1.5 px-2">Tgl Iuran</th>
-                    <th className="py-1.5 pl-2">Status</th>
+                  <tr className="bg-green-800 text-white font-semibold">
+                    <th className="py-1.5 px-2 border border-green-900">Kode</th>
+                    <th className="py-1.5 px-2 border border-green-900">Nama Akun</th>
+                    <th className="py-1.5 px-2 border border-green-900">Kategori</th>
+                    <th className="py-1.5 px-2 border border-green-900 text-right">Jumlah</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-neutral-200">
-                  {filteredBills.map((b, i) => (
-                    <tr key={b.tagihan_id}>
-                      <td className="py-1 pr-2 font-mono">{i + 1}</td>
-                      <td className="py-1 px-2 font-mono">{b.kode_silsilah || b.id_kk}</td>
-                      <td className="py-1 px-2 font-medium">{b.nama_anggota || b.id_kk}</td>
-                      <td className="py-1 px-2 text-right font-mono">{formatRp(b.nominal_tagihan)}</td>
-                      <td className="py-1 px-2 text-right font-mono">{formatRp(b.total_terbayar)}</td>
-                      <td className="py-1 px-2 text-right font-mono">{formatRp(b.sisa_tagihan)}</td>
-                      <td className="py-1 px-2 font-mono">{b.tanggal_bayar_terakhir || '-'}</td>
-                      <td className="py-1 pl-2">{b.status_bayar.replace('_', ' ')}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {activePrintScope === 'transaksi' && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-3 gap-3 border border-neutral-300 rounded p-3">
-                <div>
-                  <div className="text-[11px] text-neutral-500">Pemasukan Iuran (Otomatis)</div>
-                  <div className="font-mono font-bold text-green-800">
-                    {formatRp(data.summary.totalPemasukanIuran ?? data.summary.totalTerbayarIuran)}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[11px] text-neutral-500">Pemasukan Lainnya</div>
-                  <div className="font-mono font-bold">{formatRp(data.summary.totalPemasukanLainnya ?? 0)}</div>
-                </div>
-                <div>
-                  <div className="text-[11px] text-neutral-500">Total Pengeluaran</div>
-                  <div className="font-mono font-bold">{formatRp(data.summary.totalPengeluaranKas ?? data.summary.totalBeban)}</div>
-                </div>
-              </div>
-              <table className="w-full text-left border-collapse text-[11px]">
-                <thead>
-                  <tr className="border-b border-neutral-400 text-neutral-700 font-bold">
-                    <th className="py-1.5 pr-2">No. Bukti</th>
-                    <th className="py-1.5 px-2">Tanggal</th>
-                    <th className="py-1.5 px-2">Jenis</th>
-                    <th className="py-1.5 px-2">Keterangan</th>
-                    <th className="py-1.5 px-2 text-right">Nominal</th>
-                    <th className="py-1.5 pl-2">Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-neutral-200">
-                  {filteredTrx.map((t) => (
-                    <tr key={t.transaksi_id}>
-                      <td className="py-1 pr-2 font-mono">{t.no_transaksi}</td>
-                      <td className="py-1 px-2 font-mono">{t.tanggal_transaksi}</td>
-                      <td className="py-1 px-2">{t.jenis_transaksi}</td>
-                      <td className="py-1 px-2">{t.keterangan}</td>
-                      <td className="py-1 px-2 text-right font-mono">{formatRp(t.total_nominal)}</td>
-                      <td className="py-1 pl-2">{t.status_verifikasi}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {activePrintScope === 'laporan' && (
-            <div className="space-y-6">
-              <div className="grid grid-cols-2 gap-6">
-                <div className="border border-neutral-300 rounded p-4 space-y-2">
-                  <div className="font-bold text-sm border-b border-neutral-300 pb-1">
-                    Laporan Aktivitas (Pendapatan &amp; Beban)
-                  </div>
+                <tbody>
                   {data.coaBalances
                     .filter((c) => c.kategori === 'PENDAPATAN' || c.kategori === 'BEBAN')
-                    .map((c) => (
-                      <div key={c.kode_akun} className="flex justify-between py-1 border-b border-neutral-100">
-                        <span>
-                          {c.kode_akun} · {c.nama_akun}
-                        </span>
-                        <span className="font-mono">
+                    .map((c, idx) => (
+                      <tr key={c.kode_akun} className={idx % 2 === 1 ? 'bg-neutral-50' : 'bg-white'}>
+                        <td className="py-1.5 px-2 border border-neutral-200 font-mono">{c.kode_akun}</td>
+                        <td className="py-1.5 px-2 border border-neutral-200">{c.nama_akun}</td>
+                        <td className="py-1.5 px-2 border border-neutral-200">{c.kategori}</td>
+                        <td className="py-1.5 px-2 border border-neutral-200 text-right font-mono tabular-nums">
                           {c.kategori === 'BEBAN' ? `(${formatRp(c.saldo)})` : formatRp(c.saldo)}
-                        </span>
-                      </div>
+                        </td>
+                      </tr>
                     ))}
-                  <div className="flex justify-between pt-2 font-bold">
-                    <span>Surplus / (Defisit) Bersih</span>
-                    <span className="font-mono">{formatRp(data.summary.surplusDefisit)}</span>
-                  </div>
-                </div>
+                  <tr className="bg-green-50 font-bold">
+                    <td colSpan={3} className="py-1.5 px-2 border border-neutral-200">SURPLUS / (DEFISIT) BERSIH</td>
+                    <td className="py-1.5 px-2 border border-neutral-200 text-right font-mono tabular-nums text-green-900">
+                      {formatRp(data.summary.surplusDefisit)}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
 
-                <div className="border border-neutral-300 rounded p-4 space-y-2">
-                  <div className="font-bold text-sm border-b border-neutral-300 pb-1">
-                    Neraca Posisi Keuangan
-                  </div>
+            <div className="space-y-2">
+              <div className="font-bold text-xs text-neutral-900">II. Neraca Posisi Keuangan</div>
+              <table className="w-full text-left border-collapse text-[11px]">
+                <thead>
+                  <tr className="bg-green-800 text-white font-semibold">
+                    <th className="py-1.5 px-2 border border-green-900">Kode</th>
+                    <th className="py-1.5 px-2 border border-green-900">Nama Akun</th>
+                    <th className="py-1.5 px-2 border border-green-900">Kelompok</th>
+                    <th className="py-1.5 px-2 border border-green-900 text-right">Saldo</th>
+                  </tr>
+                </thead>
+                <tbody>
                   {data.coaBalances
                     .filter((c) => c.kategori === 'ASET' || c.kategori === 'KEWAJIBAN' || c.kategori === 'SALDO_DANA')
-                    .map((c) => (
-                      <div key={c.kode_akun} className="flex justify-between py-1 border-b border-neutral-100">
-                        <span>
-                          {c.kode_akun} · {c.nama_akun}
-                        </span>
-                        <span className="font-mono">{formatRp(c.saldo)}</span>
-                      </div>
+                    .map((c, idx) => (
+                      <tr key={c.kode_akun} className={idx % 2 === 1 ? 'bg-neutral-50' : 'bg-white'}>
+                        <td className="py-1.5 px-2 border border-neutral-200 font-mono">{c.kode_akun}</td>
+                        <td className="py-1.5 px-2 border border-neutral-200">{c.nama_akun}</td>
+                        <td className="py-1.5 px-2 border border-neutral-200">{c.kategori.replace('_', ' ')}</td>
+                        <td className="py-1.5 px-2 border border-neutral-200 text-right font-mono tabular-nums">
+                          {formatRp(c.saldo)}
+                        </td>
+                      </tr>
                     ))}
-                  <div className="flex justify-between pt-2 font-bold">
-                    <span>Total Aset</span>
-                    <span className="font-mono">{formatRp(data.summary.totalAset)}</span>
-                  </div>
-                  <div className="flex justify-between font-bold">
-                    <span>Total Kewajiban + Saldo Dana + Surplus</span>
-                    <span className="font-mono">
+                  <tr className="bg-neutral-100 font-bold">
+                    <td colSpan={3} className="py-1.5 px-2 border border-neutral-200">TOTAL ASET</td>
+                    <td className="py-1.5 px-2 border border-neutral-200 text-right font-mono tabular-nums">
+                      {formatRp(data.summary.totalAset)}
+                    </td>
+                  </tr>
+                  <tr className="bg-green-50 font-bold">
+                    <td colSpan={3} className="py-1.5 px-2 border border-neutral-200">TOTAL KEWAJIBAN + SALDO DANA + SURPLUS</td>
+                    <td className="py-1.5 px-2 border border-neutral-200 text-right font-mono tabular-nums text-green-900">
                       {formatRp(data.summary.totalKewajiban + data.summary.totalSaldoDana + data.summary.surplusDefisit)}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-8 pt-8 text-center">
-                <div>
-                  <div>Mengetahui, Ketua Paguyuban</div>
-                  <div className="mt-14 font-bold">_________________________</div>
-                </div>
-                <div>
-                  <div>Bendahara Paguyuban</div>
-                  <div className="mt-14 font-bold">_________________________</div>
-                </div>
-              </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
-          )}
-        </div>
-      )}
+          </div>
+        )}
+      </PrintPreviewModal>
 
       {/* MODAL BAYAR IURAN */}
       {payingBill && (
@@ -1839,47 +1914,79 @@ export function FinanceTab({ token, permission, onDataChanged, onNotify }: Finan
 
       {/* MODAL KUITANSI CETAK */}
       {receiptPreview && (
-        <div className="fixed inset-0 z-50 bg-neutral-900/50 flex items-center justify-center p-4 print:static print:bg-white print:p-0">
+        <div className="fixed inset-0 z-50 bg-neutral-900/60 flex items-center justify-center p-4 print:static print:bg-white print:p-0">
           <div className="bg-white border border-neutral-300 rounded-xl w-full max-w-lg p-6 space-y-4 print:border-0 print:max-w-none">
-            <div className="flex items-start justify-between border-b-2 border-green-800 pb-3">
-              <div>
-                <div className="text-sm font-bold text-green-900">PAGUYUBAN KELUARGA BESAR BANI HAJI MOHAMMAD TOHIR</div>
-                <div className="text-xs text-neutral-600">Guyub, Akur, Semedulur · Kuitansi Pembayaran Resmi</div>
-              </div>
+            <div className="flex items-center justify-between border-b border-neutral-200 pb-2.5 print:hidden">
+              <div className="text-xs font-bold text-neutral-700">Konsep Format Cetak · Kuitansi Pembayaran</div>
               <button
                 type="button"
                 onClick={() => setReceiptPreview(null)}
-                className="text-neutral-500 cursor-pointer print:hidden"
+                className="text-neutral-500 hover:text-neutral-800 cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <div className="text-neutral-500">Nomor Kuitansi</div>
-              <div className="font-mono font-bold text-neutral-900">{receiptPreview.no_kuitansi}</div>
-              <div className="text-neutral-500">Tanggal Bayar</div>
-              <div className="font-mono text-neutral-900">{receiptPreview.tanggal_bayar}</div>
-              <div className="text-neutral-500">Telah Diterima Dari</div>
-              <div className="font-semibold text-neutral-900">{receiptPreview.nama_pembayar}</div>
-              <div className="text-neutral-500">Metode Pembayaran</div>
-              <div className="text-neutral-900">{receiptPreview.metode_bayar}</div>
-              <div className="text-neutral-500">Untuk Pembayaran</div>
-              <div className="text-neutral-900">{receiptPreview.keterangan}</div>
+
+            <div ref={receiptSheetRef} className="space-y-4 bg-white">
+              <div className="border-b-4 border-double border-green-800 pb-3 flex items-start gap-3">
+                <div className="w-10 h-10 rounded-lg bg-green-800 text-white font-bold text-xs flex items-center justify-center shrink-0">
+                  BMT
+                </div>
+                <div>
+                  <div className="text-sm font-bold text-green-900">PAGUYUBAN KELUARGA BESAR BANI HAJI MOHAMMAD TOHIR</div>
+                  <div className="text-xs text-neutral-600">Guyub, Akur, Semedulur · Kuitansi Pembayaran Resmi</div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className="text-neutral-500">Nomor Kuitansi</div>
+                <div className="font-mono font-bold text-neutral-900">{receiptPreview.no_kuitansi}</div>
+                <div className="text-neutral-500">Tanggal Bayar</div>
+                <div className="font-mono text-neutral-900">{receiptPreview.tanggal_bayar}</div>
+                <div className="text-neutral-500">Telah Diterima Dari</div>
+                <div className="font-semibold text-neutral-900">{receiptPreview.nama_pembayar}</div>
+                <div className="text-neutral-500">Metode Pembayaran</div>
+                <div className="text-neutral-900">{receiptPreview.metode_bayar}</div>
+                <div className="text-neutral-500">Untuk Pembayaran</div>
+                <div className="text-neutral-900">{receiptPreview.keterangan}</div>
+              </div>
+
+              <div className="border border-green-800 bg-green-50 rounded-lg px-4 py-3 flex items-center justify-between">
+                <span className="text-xs font-semibold text-neutral-700">Jumlah Diterima</span>
+                <span className="text-xl font-bold font-mono tabular-nums text-green-900">
+                  {formatRp(receiptPreview.nominal_bayar)}
+                </span>
+              </div>
+
+              <div className="pt-4 flex justify-end text-center text-xs">
+                <div className="space-y-10">
+                  <div className="text-neutral-700">Bendahara Paguyuban</div>
+                  <div className="font-bold text-neutral-900">( _____________________ )</div>
+                </div>
+              </div>
             </div>
-            <div className="border-t border-b border-neutral-200 py-3 flex items-center justify-between">
-              <span className="text-xs font-semibold text-neutral-700">Jumlah Diterima</span>
-              <span className="text-xl font-bold font-mono tabular-nums text-green-800">
-                {formatRp(receiptPreview.nominal_bayar)}
-              </span>
-            </div>
-            <div className="flex items-center justify-end gap-2 print:hidden">
+
+            <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-neutral-200 print:hidden">
               <button
                 type="button"
-                onClick={() => window.print()}
+                onClick={() => {
+                  generateReceiptPdf(receiptPreview);
+                  onNotify(`PDF kuitansi ${receiptPreview.no_kuitansi} berhasil diunduh.`);
+                }}
                 className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-green-700 hover:bg-green-800 rounded-lg cursor-pointer"
               >
+                <Download className="w-3.5 h-3.5" />
+                <span>Unduh PDF Kuitansi (.pdf)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  printElementViaIframe(receiptSheetRef.current, `Kuitansi ${receiptPreview.no_kuitansi}`, 'portrait', onNotify)
+                }
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-neutral-700 bg-white border border-neutral-300 hover:bg-neutral-50 rounded-lg cursor-pointer"
+              >
                 <Printer className="w-3.5 h-3.5" />
-                <span>Cetak / Simpan PDF</span>
+                <span>Cetak ke Printer</span>
               </button>
             </div>
           </div>

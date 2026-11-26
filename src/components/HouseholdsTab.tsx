@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ChevronDown, ChevronRight, Home, Plus, RefreshCw, Search, UserPlus } from 'lucide-react';
+import { ChevronDown, ChevronRight, Home, Plus, Printer, RefreshCw, Search, UserPlus } from 'lucide-react';
 import { HouseholdRecord, KkHistoryRecord, MemberRecord, ModulePermission } from '../types';
 import { SearchableOption, SearchableSelect } from './SearchableSelect';
+import { PrintPreviewModal } from './PrintPreviewModal';
+import { generateTablePdf } from '../utils/exportPdf';
 
 interface HouseholdsTabProps {
   token: string;
@@ -16,6 +18,7 @@ export function HouseholdsTab({ token, permission, onNotify }: HouseholdsTabProp
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [printOpen, setPrintOpen] = useState(false);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [createForm, setCreateForm] = useState({
@@ -209,6 +212,15 @@ export function HouseholdsTab({ token, permission, onNotify }: HouseholdsTabProp
                 className="pl-8 pr-3 py-1.5 text-xs border border-neutral-300 rounded-lg w-52"
               />
             </div>
+            <button
+              type="button"
+              disabled={filtered.length === 0}
+              onClick={() => setPrintOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-neutral-700 bg-white border border-neutral-300 hover:bg-neutral-50 rounded-lg cursor-pointer disabled:opacity-50"
+            >
+              <Printer className="w-3.5 h-3.5" />
+              <span>Cetak / PDF</span>
+            </button>
             {permission.can_create && (
               <button
                 type="button"
@@ -568,6 +580,78 @@ export function HouseholdsTab({ token, permission, onNotify }: HouseholdsTabProp
           </form>
         </div>
       )}
+
+      {/* Konsep Format Cetak & PDF Daftar Rumah Tangga */}
+      <PrintPreviewModal
+        open={printOpen}
+        onClose={() => setPrintOpen(false)}
+        title="Daftar Rumah Tangga & Kepala Keluarga"
+        subtitle={`Menampilkan ${filtered.length} rumah tangga aktif Bani Haji Mohammad Tohir`}
+        orientation="landscape"
+        summary={[
+          { label: 'Rumah Tangga Tercetak', value: `${filtered.length} KK` },
+          { label: 'Total Anggota Terpetakan', value: `${filtered.reduce((s, h) => s + (h.jumlah_anggota || 0), 0)} jiwa` },
+          { label: 'Riwayat Pergantian KK', value: `${kkHistory.length} catatan` },
+          { label: 'Filter Pencarian', value: search.trim() || 'Semua' },
+        ]}
+        leftSignerTitle="Mengetahui, Ketua Paguyuban"
+        rightSignerTitle="Sekretariat Paguyuban"
+        onNotify={onNotify}
+        onDownloadPdf={() =>
+          generateTablePdf({
+            filename: 'daftar_rumah_tangga_bani_tohir.pdf',
+            title: 'Daftar Rumah Tangga & Kepala Keluarga',
+            subtitle: `Total ${filtered.length} rumah tangga aktif`,
+            orientation: 'landscape',
+            summary: [
+              { label: 'Rumah Tangga', value: `${filtered.length} KK` },
+              { label: 'Total Penghuni', value: `${filtered.reduce((s, h) => s + (h.jumlah_anggota || 0), 0)} jiwa` },
+              { label: 'Riwayat Ganti KK', value: `${kkHistory.length}` },
+              { label: 'Filter', value: search.trim() || 'Semua' },
+            ],
+            headers: ['No', 'ID RT', 'Nama Rumah Tangga', 'Kepala Keluarga', 'Kode', 'Jml Anggota', 'Alamat & Kontak'],
+            rows: filtered.map((h, idx) => [
+              idx + 1,
+              h.id_rumah_tangga,
+              h.nama_rumah_tangga,
+              h.kepala_keluarga?.nama_lengkap || h.id_kepala_keluarga,
+              h.kepala_keluarga?.kode_silsilah || '-',
+              `${h.jumlah_anggota || 0} orang`,
+              [h.alamat_ringkas, h.no_kontak_rt].filter(Boolean).join(' | ') || '-',
+            ]),
+            columnAlignments: { 0: 'center', 5: 'center' },
+            leftSignerTitle: 'Mengetahui, Ketua Paguyuban',
+            rightSignerTitle: 'Sekretariat Paguyuban',
+          })
+        }
+      >
+        <table className="w-full text-left border-collapse text-[11px]">
+          <thead>
+            <tr className="bg-green-800 text-white font-semibold">
+              <th className="py-2 px-2 border border-green-900 text-center w-9">No</th>
+              <th className="py-2 px-2 border border-green-900">ID RT</th>
+              <th className="py-2 px-2 border border-green-900">Nama Rumah Tangga</th>
+              <th className="py-2 px-2 border border-green-900">Kepala Keluarga</th>
+              <th className="py-2 px-2 border border-green-900">Kode</th>
+              <th className="py-2 px-2 border border-green-900 text-center">Penghuni</th>
+              <th className="py-2 px-2 border border-green-900">Alamat &amp; Kontak</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((h, idx) => (
+              <tr key={h.id_rumah_tangga} className={idx % 2 === 1 ? 'bg-neutral-50' : 'bg-white'}>
+                <td className="py-1.5 px-2 border border-neutral-200 font-mono text-center">{idx + 1}</td>
+                <td className="py-1.5 px-2 border border-neutral-200 font-mono">{h.id_rumah_tangga}</td>
+                <td className="py-1.5 px-2 border border-neutral-200 font-semibold text-neutral-900">{h.nama_rumah_tangga}</td>
+                <td className="py-1.5 px-2 border border-neutral-200">{h.kepala_keluarga?.nama_lengkap || h.id_kepala_keluarga}</td>
+                <td className="py-1.5 px-2 border border-neutral-200 font-mono text-green-900">{h.kepala_keluarga?.kode_silsilah || '-'}</td>
+                <td className="py-1.5 px-2 border border-neutral-200 font-mono text-center">{h.jumlah_anggota || 0}</td>
+                <td className="py-1.5 px-2 border border-neutral-200">{[h.alamat_ringkas, h.no_kontak_rt].filter(Boolean).join(' · ') || '-'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </PrintPreviewModal>
     </div>
   );
 }

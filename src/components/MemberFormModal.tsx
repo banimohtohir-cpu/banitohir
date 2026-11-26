@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link2, Sparkles, X } from 'lucide-react';
-import { MasterBundles, MemberRecord, SpouseRelation, WilayahItem } from '../types';
+import { Home, Link2, Sparkles, Trash2, Upload, X } from 'lucide-react';
+import { MasterBundles, MemberDetailResponse, MemberRecord, SpouseRelation, WilayahItem } from '../types';
+import { compressImageFileToDataUrl } from '../utils/memberPhoto';
+import { MemberAvatar } from './MemberAvatar';
 import { SearchableOption, SearchableSelect } from './SearchableSelect';
 
 interface MemberFormModalProps {
@@ -37,6 +39,9 @@ export function MemberFormModal({
 
   const [allMembers, setAllMembers] = useState<MemberRecord[]>([]);
   const [allCouples, setAllCouples] = useState<SpouseRelation[]>([]);
+  const [linkedParents, setLinkedParents] = useState<{ roleLabel: string; member: MemberRecord }[]>([]);
+  const [sameAddressAsParent, setSameAddressAsParent] = useState(false);
+  const [selectedParentSourceId, setSelectedParentSourceId] = useState('');
   const [nextIdPreview, setNextIdPreview] = useState('Otomatis');
 
   const [form, setForm] = useState({
@@ -47,6 +52,7 @@ export function MemberFormModal({
     gelar_belakang: member?.gelar_belakang || '',
     nama_panggilan: member?.nama_panggilan || '',
     jenis_kelamin: member?.jenis_kelamin || '',
+    foto_drive_id: member?.foto_drive_id || '',
     status_keturunan: member?.status_keturunan || 'Kandung',
     generasi_level: member?.generasi_level ?? 1,
     generasi_label: member?.generasi_label || 'Anak',
@@ -87,7 +93,6 @@ export function MemberFormModal({
   const [desaList, setDesaList] = useState<WilayahItem[]>([]);
 
   useEffect(() => {
-    if (isEdit) return;
     fetch('/api/members/relation-options', {
       headers: { Authorization: `Bearer ${token}` },
     })
@@ -100,7 +105,35 @@ export function MemberFormModal({
         }
       })
       .catch(() => {});
-  }, [isEdit, token]);
+  }, [token]);
+
+  useEffect(() => {
+    if (!isEdit || !member) {
+      setLinkedParents([]);
+      return;
+    }
+    fetch(`/api/members/${member.id_anggota}/detail`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((r) => r.json())
+      .then((data: { ok?: boolean } & Partial<MemberDetailResponse>) => {
+        if (!data.ok || !data.parents) return;
+        const list: { roleLabel: string; member: MemberRecord }[] = [];
+        const seen = new Set<string>();
+        data.parents.forEach((p) => {
+          if (p.ayah && !seen.has(p.ayah.id_anggota)) {
+            seen.add(p.ayah.id_anggota);
+            list.push({ roleLabel: `Ayah (${p.relation.jenis_hubungan})`, member: p.ayah });
+          }
+          if (p.ibu && !seen.has(p.ibu.id_anggota)) {
+            seen.add(p.ibu.id_anggota);
+            list.push({ roleLabel: 'Ibu', member: p.ibu });
+          }
+        });
+        setLinkedParents(list);
+      })
+      .catch(() => {});
+  }, [isEdit, member, token]);
 
   // Server-authoritative preview whenever relation changes in create mode
   useEffect(() => {
@@ -168,13 +201,119 @@ export function MemberFormModal({
   }
 
   const memberOptions = useMemo<SearchableOption[]>(() => {
-    return allMembers.map((m) => ({
-      value: m.id_anggota,
-      label: `${m.kode_silsilah ? `[${m.kode_silsilah}] ` : ''}${[m.gelar_depan, m.nama_lengkap, m.gelar_belakang].filter(Boolean).join(' ')}`,
-      sublabel: `${m.id_anggota} · ${m.generasi_label} (${m.status_keturunan})`,
-      keywords: `${m.nama_panggilan || ''} ${m.tempat_lahir || ''}`,
+    return allMembers
+      .filter((m) => !member || m.id_anggota !== member.id_anggota)
+      .map((m) => ({
+        value: m.id_anggota,
+        label: `${m.kode_silsilah ? `[${m.kode_silsilah}] ` : ''}${[m.gelar_depan, m.nama_lengkap, m.gelar_belakang].filter(Boolean).join(' ')}`,
+        sublabel: `${m.id_anggota} · ${m.generasi_label} (${m.status_keturunan})`,
+        keywords: `${m.nama_panggilan || ''} ${m.tempat_lahir || ''}`,
+      }));
+  }, [allMembers, member]);
+
+  const availableParents = useMemo<{ roleLabel: string; member: MemberRecord }[]>(() => {
+    if (isEdit) return linkedParents;
+    if (relationType !== 'ANAK_DARI') return [];
+    const list: { roleLabel: string; member: MemberRecord }[] = [];
+    const ayah = allMembers.find((m) => m.id_anggota === relationAyahId);
+    const ibu = allMembers.find((m) => m.id_anggota === relationIbuId);
+    if (ayah) list.push({ roleLabel: 'Ayah', member: ayah });
+    if (ibu && ibu.id_anggota !== ayah?.id_anggota) list.push({ roleLabel: 'Ibu', member: ibu });
+    return list;
+  }, [isEdit, linkedParents, relationType, allMembers, relationAyahId, relationIbuId]);
+
+  const wilayahLookup = useMemo(
+    () => new Map(masters.wilayah.map((w) => [`${w.tingkat}:${w.kode_wilayah}`, w.nama_wilayah])),
+    [masters.wilayah]
+  );
+
+  function hasAnyAddress(src: MemberRecord): boolean {
+    return Boolean(
+      (src.keterangan_alamat && !src.keterangan_alamat.includes('Terbatas')) ||
+        src.nama_jalan ||
+        src.provinsi_id ||
+        src.kabkota_id ||
+        src.kecamatan_id ||
+        src.kelurahan_id ||
+        src.rt ||
+        src.rw ||
+        src.no_rumah ||
+        src.kode_pos
+    );
+  }
+
+  function formatMemberAddressSummary(src: MemberRecord): string {
+    const cleanKet =
+      src.keterangan_alamat && !src.keterangan_alamat.includes('Terbatas') ? src.keterangan_alamat : '';
+    const rtRw = src.rt || src.rw ? `RT ${src.rt || '-'} / RW ${src.rw || '-'}` : '';
+    const wilayahText = [
+      wilayahLookup.get(`DESA:${src.kelurahan_id}`),
+      wilayahLookup.get(`KEC:${src.kecamatan_id}`),
+      wilayahLookup.get(`KAB:${src.kabkota_id}`),
+      wilayahLookup.get(`PROV:${src.provinsi_id}`),
+    ]
+      .filter(Boolean)
+      .join(', ');
+    return (
+      [cleanKet, src.nama_jalan, rtRw, src.no_rumah ? `No. ${src.no_rumah}` : '', wilayahText, src.kode_pos]
+        .filter(Boolean)
+        .join(', ') || 'Alamat orang tua ini belum diisi'
+    );
+  }
+
+  function applyAddressFromParent(src: MemberRecord, silent = false) {
+    const cleanKet =
+      src.keterangan_alamat && !src.keterangan_alamat.includes('Terbatas') ? src.keterangan_alamat : '';
+    setForm((prev) => ({
+      ...prev,
+      provinsi_id: src.provinsi_id || '',
+      kabkota_id: src.kabkota_id || '',
+      kecamatan_id: src.kecamatan_id || '',
+      kelurahan_id: src.kelurahan_id || '',
+      nama_jalan: src.nama_jalan || '',
+      rt: src.rt || '',
+      rw: src.rw || '',
+      no_rumah: src.no_rumah || '',
+      kode_pos: src.kode_pos || '',
+      keterangan_alamat: cleanKet,
     }));
-  }, [allMembers]);
+    if (!silent) {
+      onNotify(`Alamat otomatis diisi mengikuti ${src.nama_lengkap}.`);
+    }
+  }
+
+  const activeParentSource = useMemo<MemberRecord | null>(() => {
+    if (selectedParentSourceId) {
+      const fromLinked = availableParents.find((p) => p.member.id_anggota === selectedParentSourceId)?.member;
+      if (fromLinked) return fromLinked;
+      const fromAll = allMembers.find((m) => m.id_anggota === selectedParentSourceId);
+      if (fromAll) return fromAll;
+    }
+    const preferred = availableParents.find((p) => hasAnyAddress(p.member)) || availableParents[0];
+    return preferred?.member || null;
+  }, [selectedParentSourceId, availableParents, allMembers]);
+
+  function handleToggleSameAsParent(checked: boolean) {
+    setSameAddressAsParent(checked);
+    if (!checked) return;
+    const preferred =
+      availableParents.find((p) => p.member.id_anggota === selectedParentSourceId)?.member ||
+      availableParents.find((p) => hasAnyAddress(p.member))?.member ||
+      availableParents[0]?.member ||
+      allMembers.find((m) => m.id_anggota === selectedParentSourceId) ||
+      null;
+    if (preferred) {
+      setSelectedParentSourceId(preferred.id_anggota);
+      applyAddressFromParent(preferred);
+    }
+  }
+
+  // If creating a child with checkbox already active and user selects Ayah/Ibu afterwards, sync address automatically
+  useEffect(() => {
+    if (!isEdit && sameAddressAsParent && activeParentSource) {
+      applyAddressFromParent(activeParentSource, true);
+    }
+  }, [isEdit, sameAddressAsParent, activeParentSource?.id_anggota]);
 
   async function loadWilayah(tingkat: 'PROV' | 'KAB' | 'KEC' | 'DESA', kodeInduk: string) {
     if (tingkat !== 'PROV' && !kodeInduk) return [];
@@ -603,6 +742,55 @@ export function MemberFormModal({
                   />
                 </div>
               )}
+              <div className="sm:col-span-4 bg-neutral-50 border border-neutral-200 rounded-lg p-3 flex flex-wrap items-center gap-4">
+                <MemberAvatar
+                  name={[form.gelar_depan, form.nama_lengkap, form.gelar_belakang].filter(Boolean).join(' ')}
+                  photoValue={form.foto_drive_id}
+                  size="lg"
+                />
+                <div className="flex-1 min-w-[220px] space-y-2">
+                  <div className="font-semibold text-neutral-800">Foto Profil Anggota (Opsional)</div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-green-800 bg-white border border-green-300 hover:bg-green-50 rounded-lg cursor-pointer">
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>Pilih Foto dari Perangkat</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          e.target.value = '';
+                          if (!file) return;
+                          try {
+                            const dataUrl = await compressImageFileToDataUrl(file, 320);
+                            setForm((prev) => ({ ...prev, foto_drive_id: dataUrl }));
+                          } catch (err) {
+                            onNotify(err instanceof Error ? err.message : 'Gagal memproses foto.', 'error');
+                          }
+                        }}
+                      />
+                    </label>
+                    <input
+                      type="text"
+                      value={form.foto_drive_id.startsWith('data:image/') ? '' : form.foto_drive_id}
+                      onChange={(e) => setForm({ ...form, foto_drive_id: e.target.value })}
+                      placeholder="Atau tempel URL foto / ID Google Drive..."
+                      className="flex-1 min-w-[200px] px-3 py-1.5 border border-neutral-300 rounded-lg bg-white text-xs"
+                    />
+                    {form.foto_drive_id && (
+                      <button
+                        type="button"
+                        onClick={() => setForm({ ...form, foto_drive_id: '' })}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-red-700 bg-white border border-red-200 hover:bg-red-50 rounded-lg cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Hapus</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
             </div>
           </section>
 
@@ -679,6 +867,77 @@ export function MemberFormModal({
             <h4 className="text-xs font-bold uppercase tracking-wider text-green-800 border-b border-neutral-200 pb-1.5">
               3. Alamat Domisili Wilayah Indonesia
             </h4>
+
+            {/* Opsi Alamat Sama dengan Orang Tua */}
+            <div className="bg-neutral-50 border border-neutral-200 rounded-lg p-3 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="inline-flex items-center gap-2 cursor-pointer font-semibold text-neutral-800">
+                  <input
+                    type="checkbox"
+                    checked={sameAddressAsParent}
+                    onChange={(e) => handleToggleSameAsParent(e.target.checked)}
+                    className="rounded border-neutral-300 text-green-700 focus:ring-green-700"
+                  />
+                  <Home className="w-3.5 h-3.5 text-green-700" />
+                  <span>Alamat sama dengan orang tua (isi otomatis)</span>
+                </label>
+
+                {availableParents.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {availableParents.map((p) => {
+                      const isSelected = activeParentSource?.id_anggota === p.member.id_anggota;
+                      return (
+                        <button
+                          key={p.member.id_anggota}
+                          type="button"
+                          onClick={() => {
+                            setSameAddressAsParent(true);
+                            setSelectedParentSourceId(p.member.id_anggota);
+                            applyAddressFromParent(p.member);
+                          }}
+                          className={`px-2.5 py-1 text-[11px] font-semibold rounded-md border cursor-pointer ${
+                            sameAddressAsParent && isSelected
+                              ? 'bg-green-700 text-white border-green-700'
+                              : 'bg-white text-neutral-700 border-neutral-300 hover:bg-neutral-100'
+                          }`}
+                        >
+                          {p.roleLabel}: {p.member.nama_lengkap}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {sameAddressAsParent && availableParents.length === 0 && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 items-center pt-1">
+                  <div className="text-[11px] text-neutral-600">
+                    Tautan orang tua belum tercatat. Pilih orang tua / keluarga sumber alamat:
+                  </div>
+                  <SearchableSelect
+                    compact
+                    options={memberOptions}
+                    value={selectedParentSourceId}
+                    onChange={(val) => {
+                      setSelectedParentSourceId(val);
+                      const chosen = allMembers.find((m) => m.id_anggota === val);
+                      if (chosen) applyAddressFromParent(chosen);
+                    }}
+                    placeholder="Ketik nama orang tua / kepala keluarga..."
+                    searchPlaceholder="Cari nama atau kode silsilah..."
+                    allowClear
+                  />
+                </div>
+              )}
+
+              {activeParentSource && (
+                <div className="text-[11px] text-neutral-600 bg-white border border-neutral-200 rounded-md px-3 py-1.5">
+                  <span className="font-semibold text-neutral-800">Alamat {activeParentSource.nama_lengkap}: </span>
+                  <span>{formatMemberAddressSummary(activeParentSource)}</span>
+                </div>
+              )}
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
               <div>
                 <label className="block font-semibold text-neutral-700 mb-1">Provinsi</label>

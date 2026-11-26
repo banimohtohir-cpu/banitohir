@@ -10,6 +10,8 @@ import {
 import { MemberDetailModal } from './MemberDetailModal';
 import { MemberFormModal } from './MemberFormModal';
 import { SearchableOption, SearchableSelect } from './SearchableSelect';
+import { PrintPreviewModal } from './PrintPreviewModal';
+import { generateTablePdf } from '../utils/exportPdf';
 
 interface FamilyTreeTabProps {
   token: string;
@@ -46,6 +48,7 @@ export function FamilyTreeTab({
 
   const [detailMemberId, setDetailMemberId] = useState<string | null>(null);
   const [editingMember, setEditingMember] = useState<MemberRecord | null>(null);
+  const [printTreeOpen, setPrintTreeOpen] = useState(false);
 
   // Relation editor modal
   const [relationModalOpen, setRelationModalOpen] = useState(false);
@@ -410,7 +413,7 @@ export function FamilyTreeTab({
             )}
             <button
               type="button"
-              onClick={() => window.print()}
+              onClick={() => setPrintTreeOpen(true)}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-neutral-700 bg-white border border-neutral-300 hover:bg-neutral-50 rounded-lg cursor-pointer"
             >
               <Printer className="w-3.5 h-3.5" />
@@ -907,6 +910,7 @@ export function FamilyTreeTab({
             setFocusId(id);
             setViewMode('KELUARGA_INTI');
           }}
+          onNotify={onNotify}
         />
       )}
 
@@ -923,6 +927,191 @@ export function FamilyTreeTab({
           onNotify={onNotify}
         />
       )}
+
+      {/* Konsep Format Cetak & PDF Silsilah */}
+      {(() => {
+        if (!printTreeOpen) return null;
+
+        type TreePrintRow = {
+          depth: number;
+          kode: string;
+          nama: string;
+          generasi: string;
+          keturunan: string;
+          pasangan: string;
+          status: string;
+        };
+
+        const rows: TreePrintRow[] = [];
+        const visited = new Set<string>();
+
+        const formatSpouses = (id: string) => {
+          const list = spousesByMember.get(id) || [];
+          if (list.length === 0) return '-';
+          return list
+            .map(({ rel, partner }) => {
+              const name = [partner.gelar_depan, partner.nama_lengkap, partner.gelar_belakang].filter(Boolean).join(' ');
+              return `${list.length > 1 ? `[${rel.urutan_pasangan}] ` : ''}${name}`;
+            })
+            .join('; ');
+        };
+
+        const walk = (memberId: string, depth: number) => {
+          if (visited.has(memberId) || depth > 8) return;
+          const m = memberMap.get(memberId);
+          if (!m) return;
+          visited.add(memberId);
+          rows.push({
+            depth,
+            kode: m.kode_silsilah || m.id_anggota,
+            nama: [m.gelar_depan, m.nama_lengkap, m.gelar_belakang].filter(Boolean).join(' '),
+            generasi: m.generasi_label,
+            keturunan: m.status_keturunan,
+            pasangan: formatSpouses(m.id_anggota),
+            status: m.status_hidup,
+          });
+          const kids = childrenByParent.get(memberId) || [];
+          kids.forEach(({ child }) => walk(child.id_anggota, depth + 1));
+        };
+
+        if (viewMode === 'KELUARGA_INTI' && focusMember) {
+          focusParents.forEach((p) => {
+            if (p.id_ayah && memberMap.get(p.id_ayah)) {
+              const ay = memberMap.get(p.id_ayah)!;
+              rows.push({
+                depth: 0,
+                kode: ay.kode_silsilah || ay.id_anggota,
+                nama: `[Ayah] ${ay.nama_lengkap}`,
+                generasi: ay.generasi_label,
+                keturunan: ay.status_keturunan,
+                pasangan: formatSpouses(ay.id_anggota),
+                status: ay.status_hidup,
+              });
+            }
+            if (p.id_ibu && memberMap.get(p.id_ibu)) {
+              const ib = memberMap.get(p.id_ibu)!;
+              rows.push({
+                depth: 0,
+                kode: ib.kode_silsilah || ib.id_anggota,
+                nama: `[Ibu] ${ib.nama_lengkap}`,
+                generasi: ib.generasi_label,
+                keturunan: ib.status_keturunan,
+                pasangan: formatSpouses(ib.id_anggota),
+                status: ib.status_hidup,
+              });
+            }
+          });
+          rows.push({
+            depth: 1,
+            kode: focusMember.kode_silsilah || focusMember.id_anggota,
+            nama: `[Fokus] ${focusMember.nama_lengkap}`,
+            generasi: focusMember.generasi_label,
+            keturunan: focusMember.status_keturunan,
+            pasangan: formatSpouses(focusMember.id_anggota),
+            status: focusMember.status_hidup,
+          });
+          focusChildren.forEach(({ rel, child }) => {
+            rows.push({
+              depth: 2,
+              kode: child.kode_silsilah || child.id_anggota,
+              nama: `[Anak ke-${rel.urutan_anak}] ${child.nama_lengkap}`,
+              generasi: child.generasi_label,
+              keturunan: child.status_keturunan,
+              pasangan: formatSpouses(child.id_anggota),
+              status: child.status_hidup,
+            });
+          });
+        } else if (viewMode === 'CABANG' && activeBranchRoot) {
+          walk(activeBranchRoot.id_anggota, 0);
+        } else {
+          walk(rootId, 0);
+        }
+
+        const modeSubtitle =
+          viewMode === 'CABANG'
+            ? `Silsilah Cabang Anak ke-${selectedCabang}`
+            : viewMode === 'KELUARGA_INTI' && focusMember
+            ? `Silsilah Keluarga Inti: ${focusMember.nama_lengkap}`
+            : 'Pohon Silsilah Lengkap Keluarga Besar (Semua Cabang)';
+
+        return (
+          <PrintPreviewModal
+            open={printTreeOpen}
+            onClose={() => setPrintTreeOpen(false)}
+            title="Bagan & Daftar Silsilah Keluarga"
+            subtitle={modeSubtitle}
+            orientation="landscape"
+            summary={[
+              { label: 'Mode Tampilan', value: viewMode.replace('_', ' ') },
+              { label: 'Simpul Tercetak', value: `${rows.length} anggota` },
+              { label: 'Total Anggota Terdaftar', value: `${members.length} jiwa` },
+              { label: 'Relasi Pasangan Aktif', value: `${couples.filter((c) => c.status_aktif).length}` },
+            ]}
+            leftSignerTitle="Mengetahui, Ketua Paguyuban"
+            rightSignerTitle="Koordinator Silsilah"
+            onNotify={onNotify}
+            onDownloadPdf={() =>
+              generateTablePdf({
+                filename: `silsilah_bani_tohir_${viewMode.toLowerCase()}.pdf`,
+                title: 'Bagan & Daftar Silsilah Keluarga',
+                subtitle: modeSubtitle,
+                orientation: 'landscape',
+                summary: [
+                  { label: 'Mode', value: viewMode.replace('_', ' ') },
+                  { label: 'Simpul Tercetak', value: `${rows.length} anggota` },
+                  { label: 'Total Anggota', value: `${members.length} jiwa` },
+                  { label: 'Relasi Pasangan', value: `${couples.filter((c) => c.status_aktif).length}` },
+                ],
+                headers: ['No', 'Kode', 'Struktur / Nama Lengkap', 'Generasi', 'Keturunan', 'Pasangan', 'Status'],
+                rows: rows.map((r, idx) => [
+                  idx + 1,
+                  r.kode,
+                  `${'  '.repeat(r.depth)}${r.depth > 0 ? '|- ' : ''}${r.nama}`,
+                  r.generasi,
+                  r.keturunan,
+                  r.pasangan,
+                  r.status,
+                ]),
+                columnAlignments: { 0: 'center' },
+                leftSignerTitle: 'Mengetahui, Ketua Paguyuban',
+                rightSignerTitle: 'Koordinator Silsilah',
+              })
+            }
+          >
+            <table className="w-full text-left border-collapse text-[11px]">
+              <thead>
+                <tr className="bg-green-800 text-white font-semibold">
+                  <th className="py-2 px-2 border border-green-900 text-center w-9">No</th>
+                  <th className="py-2 px-2 border border-green-900">Kode</th>
+                  <th className="py-2 px-2 border border-green-900">Garis Keturunan &amp; Nama</th>
+                  <th className="py-2 px-2 border border-green-900">Generasi</th>
+                  <th className="py-2 px-2 border border-green-900">Keturunan</th>
+                  <th className="py-2 px-2 border border-green-900">Pasangan</th>
+                  <th className="py-2 px-2 border border-green-900">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r, idx) => (
+                  <tr key={`${r.kode}-${idx}`} className={idx % 2 === 1 ? 'bg-neutral-50' : 'bg-white'}>
+                    <td className="py-1.5 px-2 border border-neutral-200 font-mono text-center">{idx + 1}</td>
+                    <td className="py-1.5 px-2 border border-neutral-200 font-mono font-semibold text-green-900">{r.kode}</td>
+                    <td className="py-1.5 px-2 border border-neutral-200 font-medium">
+                      <span style={{ paddingLeft: `${r.depth * 14}px` }} className="inline-block">
+                        {r.depth > 0 ? '└─ ' : ''}
+                        {r.nama}
+                      </span>
+                    </td>
+                    <td className="py-1.5 px-2 border border-neutral-200">{r.generasi}</td>
+                    <td className="py-1.5 px-2 border border-neutral-200">{r.keturunan}</td>
+                    <td className="py-1.5 px-2 border border-neutral-200 text-neutral-700">{r.pasangan}</td>
+                    <td className="py-1.5 px-2 border border-neutral-200">{r.status}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </PrintPreviewModal>
+        );
+      })()}
     </div>
   );
 }

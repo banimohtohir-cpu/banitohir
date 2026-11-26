@@ -419,7 +419,15 @@ export interface PengurusEnriched {
   created_at: string;
   nama_anggota?: string;
   kode_silsilah?: string;
+  generasi_level?: number | null;
+  generasi_label?: string;
+  status_keturunan?: string;
+  alamat_lengkap?: string;
+  no_hp?: string;
+  email?: string;
+  foto_drive_id?: string;
   nama_jabatan?: string;
+  deskripsi_tugas?: string;
   level_hierarki?: number;
 }
 

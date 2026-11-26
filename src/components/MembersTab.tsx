@@ -4,7 +4,9 @@ import { MasterBundles, MemberRecord, ModulePermission } from '../types';
 import { MemberFormModal } from './MemberFormModal';
 import { MemberDetailModal } from './MemberDetailModal';
 import { SearchableSelect } from './SearchableSelect';
+import { PrintPreviewModal } from './PrintPreviewModal';
 import { exportMembersToExcel } from '../utils/exportExcel';
+import { generateTablePdf } from '../utils/exportPdf';
 
 interface MembersTabProps {
   token: string;
@@ -108,16 +110,8 @@ export function MembersTab({
     try {
       const all = await fetchAllFilteredForExport();
       setPrintRows(all);
-      const cleanup = () => {
-        setPrintRows(null);
-        window.removeEventListener('afterprint', cleanup);
-      };
-      window.addEventListener('afterprint', cleanup);
-      window.setTimeout(() => {
-        window.print();
-      }, 150);
     } catch (err) {
-      onNotify(err instanceof Error ? err.message : 'Gagal menyiapkan cetak PDF.', 'error');
+      onNotify(err instanceof Error ? err.message : 'Gagal menyiapkan konsep cetak PDF.', 'error');
     } finally {
       setExporting(false);
     }
@@ -456,60 +450,92 @@ export function MembersTab({
               setDetailMemberId(null);
               onOpenTreeFocus(id);
             }}
+            onNotify={onNotify}
           />
         )}
       </div>
 
-      {/* Printable Report View (Only visible in Print/PDF) */}
-      <div className="hidden print:block bg-white p-4 text-xs space-y-4">
-        <div className="border-b-2 border-green-900 pb-3 flex items-start justify-between">
-          <div>
-            <div className="text-base font-bold text-green-900 uppercase">
-              Paguyuban Keluarga Besar Bani Haji Mohammad Tohir
-            </div>
-            <div className="text-xs text-neutral-600">
-              Guyub, Akur, Semedulur · Daftar Resmi Anggota Keluarga ({(printRows || rows).length} data)
-            </div>
-          </div>
-          <div className="text-right text-[11px] font-mono text-neutral-600">
-            Dicetak: {new Date().toLocaleDateString('id-ID')}
-          </div>
-        </div>
-
+      {/* Konsep Format Cetak & Generate PDF Daftar Anggota */}
+      <PrintPreviewModal
+        open={printRows !== null}
+        onClose={() => setPrintRows(null)}
+        title="Daftar Resmi Anggota Keluarga Besar"
+        subtitle={`Menampilkan ${(printRows || []).length} anggota sesuai filter aktif${cabang ? ` · Cabang Anak ke-${cabang}` : ''}${generasi ? ` · Generasi ${generasi}` : ''}`}
+        orientation="landscape"
+        summary={[
+          { label: 'Jumlah Anggota Tercetak', value: `${(printRows || []).length} jiwa` },
+          { label: 'Status Hidup', value: String((printRows || []).filter((r) => r.status_hidup === 'HIDUP').length) },
+          { label: 'Kepala Keluarga (KK)', value: String((printRows || []).filter((r) => r.is_kk).length) },
+          { label: 'Keturunan Kandung', value: String((printRows || []).filter((r) => r.status_keturunan === 'Kandung').length) },
+        ]}
+        leftSignerTitle="Mengetahui, Ketua Paguyuban"
+        rightSignerTitle="Sekretaris Paguyuban"
+        onNotify={onNotify}
+        onDownloadPdf={() => {
+          const list = printRows || [];
+          generateTablePdf({
+            filename: 'daftar_anggota_bani_tohir.pdf',
+            title: 'Daftar Resmi Anggota Keluarga Besar',
+            subtitle: `Total ${list.length} anggota sesuai filter aktif`,
+            orientation: 'landscape',
+            summary: [
+              { label: 'Total Anggota', value: `${list.length} jiwa` },
+              { label: 'Status Hidup', value: String(list.filter((r) => r.status_hidup === 'HIDUP').length) },
+              { label: 'Kepala Keluarga (KK)', value: String(list.filter((r) => r.is_kk).length) },
+              { label: 'Keturunan Kandung', value: String(list.filter((r) => r.status_keturunan === 'Kandung').length) },
+            ],
+            headers: ['No', 'ID', 'Kode', 'Nama Lengkap', 'Generasi / Keturunan', 'Tempat, Tgl Lahir', 'Status'],
+            rows: list.map((m, idx) => [
+              idx + 1,
+              m.id_anggota,
+              m.kode_silsilah || '-',
+              `${[m.gelar_depan, m.nama_lengkap, m.gelar_belakang].filter(Boolean).join(' ')}${m.is_kk ? ' (KK)' : ''}`,
+              `${m.generasi_label} | ${m.status_keturunan}`,
+              `${m.tempat_lahir || '-'}, ${m.tanggal_lahir || '-'}`,
+              m.status_hidup,
+            ]),
+            columnAlignments: { 0: 'center' },
+            leftSignerTitle: 'Mengetahui, Ketua Paguyuban',
+            rightSignerTitle: 'Sekretaris Paguyuban',
+          });
+        }}
+      >
         <table className="w-full text-left border-collapse text-[11px]">
           <thead>
-            <tr className="border-b border-neutral-400 text-neutral-700 font-bold">
-              <th className="py-1.5 pr-2">No</th>
-              <th className="py-1.5 px-2">ID</th>
-              <th className="py-1.5 px-2">Kode</th>
-              <th className="py-1.5 px-2">Nama Lengkap</th>
-              <th className="py-1.5 px-2">Generasi / Keturunan</th>
-              <th className="py-1.5 px-2">Tempat, Tgl Lahir</th>
-              <th className="py-1.5 pl-2">Status</th>
+            <tr className="bg-green-800 text-white font-semibold">
+              <th className="py-2 px-2 border border-green-900 text-center w-10">No</th>
+              <th className="py-2 px-2 border border-green-900">ID</th>
+              <th className="py-2 px-2 border border-green-900">Kode</th>
+              <th className="py-2 px-2 border border-green-900">Nama Lengkap</th>
+              <th className="py-2 px-2 border border-green-900">Generasi / Keturunan</th>
+              <th className="py-2 px-2 border border-green-900">Tempat, Tgl Lahir</th>
+              <th className="py-2 px-2 border border-green-900">Status</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-neutral-200">
-            {(printRows || rows).map((m, idx) => (
-              <tr key={m.id_anggota}>
-                <td className="py-1 pr-2 font-mono">{idx + 1}</td>
-                <td className="py-1 px-2 font-mono">{m.id_anggota}</td>
-                <td className="py-1 px-2 font-mono font-semibold">{m.kode_silsilah || '-'}</td>
-                <td className="py-1 px-2 font-medium">
+          <tbody>
+            {(printRows || []).map((m, idx) => (
+              <tr key={m.id_anggota} className={idx % 2 === 1 ? 'bg-neutral-50' : 'bg-white'}>
+                <td className="py-1.5 px-2 border border-neutral-200 font-mono tabular-nums text-center">{idx + 1}</td>
+                <td className="py-1.5 px-2 border border-neutral-200 font-mono tabular-nums">{m.id_anggota}</td>
+                <td className="py-1.5 px-2 border border-neutral-200 font-mono tabular-nums font-semibold text-green-900">
+                  {m.kode_silsilah || '-'}
+                </td>
+                <td className="py-1.5 px-2 border border-neutral-200 font-medium">
                   {[m.gelar_depan, m.nama_lengkap, m.gelar_belakang].filter(Boolean).join(' ')}
                   {m.is_kk ? ' (KK)' : ''}
                 </td>
-                <td className="py-1 px-2">
+                <td className="py-1.5 px-2 border border-neutral-200">
                   {m.generasi_label} · {m.status_keturunan}
                 </td>
-                <td className="py-1 px-2 font-mono">
+                <td className="py-1.5 px-2 border border-neutral-200 font-mono tabular-nums">
                   {m.tempat_lahir || '-'}, {m.tanggal_lahir || '-'}
                 </td>
-                <td className="py-1 pl-2">{m.status_hidup}</td>
+                <td className="py-1.5 px-2 border border-neutral-200">{m.status_hidup}</td>
               </tr>
             ))}
           </tbody>
         </table>
-      </div>
+      </PrintPreviewModal>
     </>
   );
 }

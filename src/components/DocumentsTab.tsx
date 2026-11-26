@@ -1,7 +1,9 @@
-import React, { useEffect, useState } from 'react';
-import { Archive, FileText, Mail, Plus, Printer, RefreshCw, X } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Archive, Download, FileText, Mail, Plus, Printer, RefreshCw, X } from 'lucide-react';
 import { OrganizationBundleResponse, SuratRecord } from '../types';
 import { SearchableSelect } from './SearchableSelect';
+import { printElementViaIframe } from './PrintPreviewModal';
+import { generateLetterPdf } from '../utils/exportPdf';
 
 interface DocumentsTabProps {
   token: string;
@@ -19,6 +21,7 @@ export function DocumentsTab({ token, onNotify }: DocumentsTabProps) {
   const [letterPenerima, setLetterPenerima] = useState<SuratRecord['penerima_tipe']>('SEMUA_KELUARGA');
   const [letterIsi, setLetterIsi] = useState('');
   const [previewLetter, setPreviewLetter] = useState<SuratRecord | null>(null);
+  const letterSheetRef = useRef<HTMLDivElement>(null);
 
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [invKegiatanId, setInvKegiatanId] = useState('');
@@ -426,55 +429,77 @@ export function DocumentsTab({ token, onNotify }: DocumentsTabProps) {
 
       {/* Modal Pratinjau Cetak Surat Ber-Kop Resmi */}
       {previewLetter && (
-        <div className="fixed inset-0 z-50 bg-neutral-900/50 flex items-center justify-center p-4 print:static print:bg-white print:p-0">
-          <div className="bg-white border border-neutral-300 rounded-xl w-full max-w-2xl p-8 space-y-5 print:border-0 print:max-w-none">
-            <div className="flex items-start justify-between border-b-2 border-green-900 pb-4">
-              <div>
-                <div className="text-base font-bold text-green-900 uppercase">
-                  Paguyuban Keluarga Besar Bani Haji Mohammad Tohir
-                </div>
-                <div className="text-xs text-neutral-600 mt-0.5">
-                  Guyub, Akur, Semedulur · Sekretariat Pusat: Pangebatan, Karanglewas, Banyumas
-                </div>
-              </div>
-              <button type="button" onClick={() => setPreviewLetter(null)} className="text-neutral-500 cursor-pointer print:hidden">
+        <div className="fixed inset-0 z-50 bg-neutral-900/60 flex items-center justify-center p-4 overflow-y-auto print:static print:bg-white print:p-0">
+          <div className="bg-white border border-neutral-300 rounded-xl w-full max-w-2xl p-6 sm:p-8 space-y-5 my-auto print:border-0 print:max-w-none">
+            <div className="flex items-center justify-between border-b border-neutral-200 pb-3 print:hidden">
+              <div className="text-xs font-bold text-neutral-700">Konsep Format Cetak · Surat Resmi Paguyuban</div>
+              <button type="button" onClick={() => setPreviewLetter(null)} className="text-neutral-500 hover:text-neutral-800 cursor-pointer">
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <div className="text-xs space-y-1">
-              <div>
-                Nomor: <strong className="font-mono">{previewLetter.nomor_surat}</strong>
+            <div ref={letterSheetRef} className="space-y-5 bg-white">
+              <div className="flex items-start justify-between border-b-4 border-double border-green-900 pb-4">
+                <div className="flex items-start gap-3">
+                  <div className="w-10 h-10 rounded-lg bg-green-800 text-white font-bold text-xs flex items-center justify-center shrink-0">
+                    BMT
+                  </div>
+                  <div>
+                    <div className="text-sm sm:text-base font-bold text-green-900 uppercase">
+                      Paguyuban Keluarga Besar Bani Haji Mohammad Tohir
+                    </div>
+                    <div className="text-xs text-neutral-600 mt-0.5">
+                      Guyub, Akur, Semedulur · Sekretariat Pusat: Pangebatan, Karanglewas, Banyumas
+                    </div>
+                  </div>
+                </div>
               </div>
-              <div>
-                Tanggal: <span className="font-mono">{previewLetter.tanggal_surat}</span>
+
+              <div className="text-xs space-y-1">
+                <div>
+                  Nomor: <strong className="font-mono">{previewLetter.nomor_surat}</strong>
+                </div>
+                <div>
+                  Tanggal: <span className="font-mono">{previewLetter.tanggal_surat}</span>
+                </div>
+                <div>
+                  Perihal: <strong>{previewLetter.perihal}</strong>
+                </div>
+                <div>Kepada Yth. {previewLetter.penerima_tipe.replace('_', ' ')} Bani Haji Mohammad Tohir</div>
               </div>
-              <div>
-                Perihal: <strong>{previewLetter.perihal}</strong>
+
+              <div className="text-xs text-neutral-800 leading-relaxed whitespace-pre-line min-h-[140px]">
+                {previewLetter.isi_surat || 'Assalamualaikum warahmatullahi wabarakatuh.'}
               </div>
-              <div>Kepada Yth. {previewLetter.penerima_tipe.replace('_', ' ')} Bani Haji Mohammad Tohir</div>
+
+              <div className="pt-6 flex items-end justify-between text-xs">
+                <div className="text-neutral-500">Dicatat oleh: {previewLetter.created_by}</div>
+                <div className="text-center">
+                  <div>Pengurus Paguyuban Bani H. M. Tohir</div>
+                  <div className="mt-12 font-bold text-neutral-900">Sekretariat Paguyuban</div>
+                </div>
+              </div>
             </div>
 
-            <div className="text-xs text-neutral-800 leading-relaxed whitespace-pre-line min-h-[140px]">
-              {previewLetter.isi_surat || 'Assalamualaikum warahmatullahi wabarakatuh.'}
-            </div>
-
-            <div className="pt-4 flex items-end justify-between text-xs">
-              <div className="text-neutral-500">Dicatat oleh: {previewLetter.created_by}</div>
-              <div className="text-right">
-                <div>Pengurus Paguyuban Bani H. M. Tohir</div>
-                <div className="mt-8 font-bold text-neutral-900">Sekretariat Paguyuban</div>
-              </div>
-            </div>
-
-            <div className="flex justify-end print:hidden">
+            <div className="flex flex-wrap justify-end gap-2 pt-2 border-t border-neutral-200 print:hidden">
               <button
                 type="button"
-                onClick={() => window.print()}
+                onClick={() => {
+                  generateLetterPdf(previewLetter);
+                  onNotify(`PDF surat ${previewLetter.nomor_surat} berhasil diunduh.`);
+                }}
                 className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-green-700 hover:bg-green-800 rounded-lg cursor-pointer"
               >
+                <Download className="w-3.5 h-3.5" />
+                <span>Unduh PDF Surat (.pdf)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => printElementViaIframe(letterSheetRef.current, `Surat ${previewLetter.nomor_surat}`, 'portrait', onNotify)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-neutral-700 bg-white border border-neutral-300 hover:bg-neutral-50 rounded-lg cursor-pointer"
+              >
                 <Printer className="w-3.5 h-3.5" />
-                <span>Cetak / Simpan PDF</span>
+                <span>Cetak ke Printer</span>
               </button>
             </div>
           </div>
